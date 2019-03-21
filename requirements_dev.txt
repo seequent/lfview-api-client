@@ -1,0 +1,12 @@
+ipython
+jupyter
+mock
+omf
+steno3d
+pylint
+pytest
+pytest-cov
+sphinx
+sphinx_rtd_theme
+yapf
+-r ./requirements.txt
