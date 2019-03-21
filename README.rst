@@ -3,7 +3,7 @@ LF View API Python Client Library
 
 .. image:: https://img.shields.io/pypi/v/lfview-api-client.svg
     :target: https://pypi.org/project/lfview-api-client
-.. image:: https://readthedocs.org/projects/lfview-api-client/badge/
+.. image:: https://readthedocs.org/projects/lfview/badge/
     :target: http://lfview.readthedocs.io/en/latest/
 .. image:: https://travis-ci.com/seequent/lfview-api-client.svg?branch=master
     :target: https://travis-ci.com/seequent/lfview-api-client
