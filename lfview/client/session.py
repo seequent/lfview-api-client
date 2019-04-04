@@ -39,14 +39,16 @@ class Session(properties.HasProperties):
         required=False,
     )
 
-    def __init__(self, api_key, endpoint=DEFAULT_ENDPOINT):
-        super(Session, self).__init__(
-            api_key=api_key,
-            endpoint=endpoint,
-        )
-        resp = requests.get(
+    def __init__(self, api_key, endpoint=DEFAULT_ENDPOINT, source=None):
+        kwargs = {
+            'api_key': api_key,
+            'endpoint': endpoint,
+        }
+        if source is not None:
+            kwargs.update({'source': source})
+        super(Session, self).__init__(**kwargs)
+        resp = self.session.get(
             url=USER_ENDPOINT.format(base=self.endpoint),
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError('Invalid api key or endpoint')
@@ -58,27 +60,40 @@ class Session(properties.HasProperties):
     def headers(self):
         """User session security headers for accessing the API"""
         if not self.api_key:
-            raise ValueError('User not logged in')
+            raise ValueError('User not logged in - please set api_key')
         headers = {'Authorization': 'bearer {}'.format(self.api_key)}
         if self.source:
             headers.update({'Source': self.source})
         return headers
 
+    @properties.Instance('Requests session object', instance_class=requests.Session)
+    def session(self):
+        if not getattr(self, '_session', None):
+            self._session = requests.Session()
+            self._session.headers.update(self.headers)
+        return self._session
+
     @properties.validator
     def _validate_org_proj(self):
         """Ensure the Session organization and project are valid"""
-        resp = requests.get(
+        resp = self.session.get(
             url=PROJECT_UID_ENDPOINT.format(
                 base=self.endpoint,
                 org=self.org,
                 project=self.project,
             ),
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(
                 'Invalid org/project {}/{}'.format(self.org, self.project)
             )
+
+    @properties.observer(['api_key', 'source'])
+    def _update_requests_session(self, change):
+        if getattr(self, '_session', None):
+            if self.source is None:
+                self._session.headers.pop('source', None)
+            self._session.headers.update(self.headers)
 
     def _create_org(self, org, name=None, description=None):
         """Allows logged in user to create an organization
@@ -90,10 +105,9 @@ class Session(properties.HasProperties):
             'name': name or '',
             'description': description or '',
         }
-        resp = requests.post(
+        resp = self.session.post(
             ORG_ENDPOINT.format(base=self.endpoint, ),
             json=json_dict,
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(resp.text)
@@ -112,13 +126,12 @@ class Session(properties.HasProperties):
             'name': name or '',
             'description': description or '',
         }
-        resp = requests.post(
+        resp = self.session.post(
             PROJECT_ENDPOINT.format(
                 base=self.endpoint,
                 org=self.org,
             ),
             json=json_dict,
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(resp.text)
@@ -152,10 +165,9 @@ class Session(properties.HasProperties):
         }
         if send_email:
             json_dict.update({'message': message})
-        resp = requests.post(
+        resp = self.session.post(
             VIEW_INVITES_ENDPOINT.format(view_url=view_url),
             json=json_dict,
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(resp.text)
@@ -361,7 +373,7 @@ class Session(properties.HasProperties):
         if not getattr(resource, '_url', None):
             if verbose:
                 print('uploading {}'.format(resource.__class__.__name__))
-            resp = requests.post(
+            resp = self.session.post(
                 post_url.format(
                     base=self.endpoint,
                     org=self.org,
@@ -373,16 +385,14 @@ class Session(properties.HasProperties):
                     ),
                 ),
                 json=json_dict,
-                headers=self.headers,
             )
         elif (getattr(resource, '_url', None)
               and getattr(resource, '_touched', True)):
             if verbose:
                 print('updating {}'.format(resource.__class__.__name__))
-            resp = requests.patch(
+            resp = self.session.patch(
                 resource._url,
                 json=json_dict,
-                headers=self.headers,
             )
         else:
             return resource._url
@@ -413,10 +423,9 @@ class Session(properties.HasProperties):
             if verbose:
                 print('uploading thumbnail')
             thumb_file = files.Thumbnail(thumbnail)
-            thumb_resp = requests.put(
+            thumb_resp = self.session.put(
                 resp.json()['links']['thumbnail'],
                 json=thumb_file.serialize(include_class=False),
-                headers=self.headers,
             )
             if thumb_resp.ok:
                 utils.upload_image(
@@ -466,7 +475,7 @@ class Session(properties.HasProperties):
         # fall back to View API url.
         if utils.match_url_app(url):
             project_url = utils.convert_url_app_to_project(url)
-            resp = requests.get(project_url, headers=self.headers)
+            resp = self.session.get(project_url)
             if resp.ok:
                 url = project_url
             else:
@@ -475,7 +484,7 @@ class Session(properties.HasProperties):
                 copy = True
                 url = utils.convert_url_project_to_view(project_url)
         if not resp or not resp.ok:
-            resp = requests.get(url, headers=self.headers)
+            resp = self.session.get(url)
         if not resp.ok:
             if allow_failure:
                 return url
@@ -514,7 +523,7 @@ class Session(properties.HasProperties):
         if isinstance(resource, files.base._BaseFile):
             if verbose:
                 print('Downloading binary data')
-            file_resp = requests.get(resp.json()['links']['location'])
+            file_resp = self.session.get(resp.json()['links']['location'])
             if not file_resp.ok:
                 raise ValueError(file_resp.text)
             data = file_resp.content
@@ -612,9 +621,6 @@ class Session(properties.HasProperties):
                     resource.__class__.__name__
                 )
             )
-        resp = requests.delete(
-            url,
-            headers=self.headers,
-        )
+        resp = self.session.delete(url)
         if not resp.ok:
             raise ValueError('Failed to delete: {}'.format(url))

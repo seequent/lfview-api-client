@@ -11,9 +11,9 @@ from six import string_types
 from .constants import CHUNK_SIZE, IGNORED_PROPS, RESOURCE_REGISTRIES
 
 
-def upload_chunk(url, dat, start, stop, total, content_type):
+def upload_chunk(url, dat, start, stop, total, content_type, session):
     """Upload a chunk of a file"""
-    res = requests.put(
+    res = session.put(
         url=url,
         data=dat,
         headers={
@@ -33,6 +33,7 @@ def upload_array(arr, url, chunk_size=CHUNK_SIZE):
     """Upload an array to specified URL"""
     length = arr.nbytes
     arr_bytes = arr.tobytes()
+    session = requests.Session()
     for start in range(0, length, chunk_size):
         stop = min(start + chunk_size, length)
         res = upload_chunk(
@@ -42,6 +43,7 @@ def upload_array(arr, url, chunk_size=CHUNK_SIZE):
             stop=stop,
             total=length,
             content_type='application/octet-stream',
+            session=session,
         )
     return res
 
@@ -50,6 +52,7 @@ def upload_image(img, url, chunk_size=CHUNK_SIZE):
     """Upload an image to specified URL"""
     img.seek(0, 2)
     length = img.tell()
+    session = requests.Session()
     for start in range(0, length, chunk_size):
         stop = min(start + chunk_size, length)
         img.seek(start)
@@ -60,6 +63,7 @@ def upload_image(img, url, chunk_size=CHUNK_SIZE):
             stop=stop,
             total=length,
             content_type='image/png',
+            session=session,
         )
     return res
 

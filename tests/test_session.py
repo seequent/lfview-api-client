@@ -10,6 +10,7 @@ except ImportError:
 import numpy as np
 import png
 import pytest
+import requests
 from six import string_types
 from lfview.client import Session
 from lfview.client.constants import CHUNK_SIZE
@@ -17,7 +18,7 @@ from lfview.resources import files, manifests, spatial, scene
 
 
 @pytest.fixture()
-@mock.patch('lfview.client.session.requests.get')
+@mock.patch('lfview.client.session.requests.Session.get')
 def session(mock_get):
     mock_resp = mock.MagicMock()
     mock_get.return_value = mock_resp
@@ -33,11 +34,17 @@ def test_session(session):
         'Authorization': 'bearer my_key',
         'Source': 'Python API Client v0.0.1',
     }
+    assert isinstance(session.session, requests.Session)
+    assert session.session.headers['Authorization'] == 'bearer my_key'
+    assert session.session.headers['Source'] == 'Python API Client v0.0.1'
     del session.source
     assert session.headers == {'Authorization': 'bearer my_key'}
+    assert session.session.headers['Authorization'] == 'bearer my_key'
+    assert 'source' not in session.session.headers
 
 
-@mock.patch('lfview.client.session.requests.post')
+
+@mock.patch('lfview.client.session.requests.Session.post')
 def test_create_org(mock_post, session):
     mock_resp = mock.MagicMock()
     mock_post.return_value = mock_resp
@@ -51,11 +58,10 @@ def test_create_org(mock_post, session):
             'name': 'My Org',
             'description': '',
         },
-        headers=session.headers,
     )
 
 
-@mock.patch('lfview.client.session.requests.post')
+@mock.patch('lfview.client.session.requests.Session.post')
 def test_create_project(mock_post, session):
     mock_resp = mock.MagicMock()
     mock_post.return_value = mock_resp
@@ -69,11 +75,10 @@ def test_create_project(mock_post, session):
             'name': '',
             'description': 'My Project',
         },
-        headers=session.headers,
     )
 
 
-@mock.patch('lfview.client.session.requests.post')
+@mock.patch('lfview.client.session.requests.Session.post')
 def test_invite(mock_post, session):
     mock_resp = mock.MagicMock()
     mock_post.return_value = mock_resp
@@ -101,7 +106,6 @@ def test_invite(mock_post, session):
             'roles': ['view.editor'],
             'send_email': False
         },
-        headers=session.headers,
     )
     session.invite_to_view(
         view_url=view_url,
@@ -118,14 +122,13 @@ def test_invite(mock_post, session):
             'send_email': True,
             'message': 'some message',
         },
-        headers=session.headers,
     )
 
 
 @pytest.mark.parametrize('verbose', [True, False])
-@mock.patch('lfview.client.session.requests.post')
-@mock.patch('lfview.client.session.requests.patch')
-@mock.patch('lfview.client.session.requests.put')
+@mock.patch('lfview.client.session.requests.Session.post')
+@mock.patch('lfview.client.session.requests.Session.patch')
+@mock.patch('lfview.client.session.requests.Session.put')
 @mock.patch('lfview.client.session.utils.upload_array')
 @mock.patch('lfview.client.session.utils.upload_image')
 @mock.patch('lfview.resources.files.base._BaseUIDModel.pointer_regex')
@@ -238,7 +241,6 @@ def test_upload(
                     'content_type': 'application/octet-stream',
                     'content_length': 72,
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/files/array',
@@ -248,7 +250,6 @@ def test_upload(
                     'content_type': 'application/octet-stream',
                     'content_length': 24,
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/files/image',
@@ -256,7 +257,6 @@ def test_upload(
                     'content_type': 'image/png',
                     'content_length': img.seek(0, 2),
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/mappings/continuous',
@@ -267,7 +267,6 @@ def test_upload(
                     'visibility': [False, True, True, True, False],
                     'interpolate': False,
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/data/basic',
@@ -277,7 +276,6 @@ def test_upload(
                     'array': 'https://example.com/api/self',
                     'mappings': [],
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/data/basic',
@@ -291,7 +289,6 @@ def test_upload(
                         'https://example.com/api/mapping_uploaded',
                     ],
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/textures/projection',
@@ -301,7 +298,6 @@ def test_upload(
                     'axis_v': [0., 1, 0],
                     'image': 'https://example.com/api/self',
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/elements/pointset',
@@ -322,7 +318,6 @@ def test_upload(
                         }
                     },
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/views',
@@ -346,7 +341,6 @@ def test_upload(
                         'https://example.com/api/my_element',
                     ],
                 },
-                headers=session.headers,
             ),
         ],
         any_order=True
@@ -359,7 +353,6 @@ def test_upload(
             'end_inclusive': [True, True],
             'visibility': [True, True, True],
         },
-        headers=session.headers,
     )
     mock_put.assert_called_with(
         'https://example.com/api/self/thumbnail',
@@ -367,7 +360,6 @@ def test_upload(
             'content_type': 'image/png',
             'content_length': 88,
         },
-        headers=session.headers,
     )
 
 
@@ -536,7 +528,7 @@ def test_bad_upload_feedback(feedback, slide_url, verbose, session):
 
 @pytest.mark.parametrize('copy', [True, False])
 @pytest.mark.parametrize('verbose', [True, False])
-@mock.patch('lfview.client.session.requests.get')
+@mock.patch('lfview.client.session.requests.Session.get')
 def test_download(mock_get, copy, verbose, session):
     generic_contents_list = [
         'https://example.com/api/v1/view/org/proj/viewuid/{}/uid'.
@@ -595,7 +587,7 @@ def test_download(mock_get, copy, verbose, session):
     kwargs = {'copy': copy, 'verbose': verbose}
 
     resource = session.download(view_url, recursive=False, **kwargs)
-    mock_get.assert_called_once_with(view_url, headers=session.headers)
+    mock_get.assert_called_once_with(view_url)
     assert isinstance(resource, manifests.View)
     assert resource.name == 'Some Resource'
     assert resource.elements == [
@@ -614,37 +606,29 @@ def test_download(mock_get, copy, verbose, session):
         [
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid',
-                headers=session.headers
             ),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/files/array/uid',
-                headers=session.headers
             ),
             mock.call('https://example.com/some_file'),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/files/image/uid',
-                headers=session.headers
             ),
             mock.call('https://example.com/some_file'),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/elements/pointset/uid',
-                headers=session.headers
             ),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/data/basic/uid',
-                headers=session.headers
             ),
             mock.call(
                 'https://example.com/unknown_service/files/array/uid',
-                headers=session.headers
             ),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/mappings/continuous/uid',
-                headers=session.headers
             ),
             mock.call(
                 'https://example.com/api/v1/project/org/proj/textures/projection/uid',
-                headers=session.headers
             ),
         ]
     )
@@ -661,7 +645,7 @@ def test_download(mock_get, copy, verbose, session):
 
 
 @pytest.mark.parametrize('verbose', [True, False])
-@mock.patch('lfview.client.session.requests.get')
+@mock.patch('lfview.client.session.requests.Session.get')
 def test_app_url(mock_get, verbose, session):
     mock_resp = mock.MagicMock(ok=False)
     mock_get.return_value = mock_resp
@@ -676,11 +660,9 @@ def test_app_url(mock_get, verbose, session):
         [
             mock.call(
                 'https://example.com/api/v1/project/org/proj/views/view',
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/view',
-                headers=session.headers,
             ),
         ],
         any_order=True
@@ -690,7 +672,7 @@ def test_app_url(mock_get, verbose, session):
 @pytest.mark.parametrize('url', ['https://example.com/api/something', None])
 @pytest.mark.parametrize('resp_ok', [True, False])
 @pytest.mark.parametrize('use_resource', [True, False])
-@mock.patch('lfview.client.session.requests.delete')
+@mock.patch('lfview.client.session.requests.Session.delete')
 def test_delete(mock_delete, url, resp_ok, use_resource, session):
     mock_resp = mock.MagicMock(ok=resp_ok)
     mock_delete.return_value = mock_resp
@@ -706,4 +688,4 @@ def test_delete(mock_delete, url, resp_ok, use_resource, session):
         session.delete(resource)
 
     if url:
-        mock_delete.assert_called_once_with(url, headers=session.headers)
+        mock_delete.assert_called_once_with(url)
