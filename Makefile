@@ -21,14 +21,14 @@ run: build
 notebooks-docker: build
 	docker run -it --rm \
 		--name=$(APP)-notebooks \
-		-p 127.0.0.1:8888:8888 \
+		-p 127.0.0.1:8899:8899 \
 		-v $(shell pwd)/$(MODULE):/usr/src/app/$(MODULE) \
 		-v $(shell pwd)/notebooks:/usr/src/app/notebooks \
 		$(ORG)/$(APP):latest \
-		python -m notebook /usr/src/app/notebooks --ip 0.0.0.0 --port 8888 --allow-root
+		python -m notebook /usr/src/app/notebooks --ip 0.0.0.0 --port 8899 --allow-root
 
 notebooks-local:
-	python -m notebook $(shell pwd)/notebooks --ip 0.0.0.0 --port 8888 --allow-root
+	python -m notebook $(shell pwd)/notebooks --ip 0.0.0.0 --port 8899 --allow-root
 
 tests: build
 	mkdir -p cover
