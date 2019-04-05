@@ -4,7 +4,7 @@ from lfview.resources.manifests import MANIFEST_REGISTRY
 from lfview.resources.scene import SCENE_REGISTRY
 from lfview.resources.spatial import SPATIAL_REGISTRY
 
-CHUNK_SIZE = 16 * 256 * 1024
+CHUNK_SIZE = 80 * 256 * 1024
 IGNORED_PROPS = [
     'uid',
     'author',
