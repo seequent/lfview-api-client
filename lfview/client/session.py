@@ -321,6 +321,8 @@ class Session(properties.HasProperties):
             post_url = view_url + '/slides'
         else:
             post_url = None
+        if verbose:
+            print('Starting upload of {}'.format(slide.__class__.__name__))
         if autofill_plane and slide.scene.camera and not slide.annotation_plane:
             slide.annotation_plane = utils.drawing_plane_from_camera(
                 slide.scene.camera
@@ -343,6 +345,8 @@ class Session(properties.HasProperties):
             post_url=post_url,
             thumbnail=thumbnail,
         )
+        if verbose:
+            print('Finished upload of {}'.format(slide.__class__.__name__))
         return output_url
 
     def upload_feedback(self, feedback, slide_url=None, verbose=True):
@@ -373,6 +377,8 @@ class Session(properties.HasProperties):
             post_url = slide_url + '/feedback'
         else:
             post_url = None
+        if verbose:
+            print('Starting upload of {}'.format(feedback.__class__.__name__))
         feedback.validate()
         json_dict = feedback.serialize(include_class=False)
         for name in IGNORED_PROPS:
@@ -385,6 +391,8 @@ class Session(properties.HasProperties):
             post_url=post_url,
             thumbnail=None,
         )
+        if verbose:
+            print('Finished upload of {}'.format(feedback.__class__.__name__))
         return output_url
 
     def _upload(
@@ -419,8 +427,6 @@ class Session(properties.HasProperties):
             )
         elif (getattr(resource, '_url', None)
               and getattr(resource, '_touched', True)):
-            if verbose:
-                print('updating {}'.format(resource.__class__.__name__))
             resp = self.session.patch(
                 resource._url,
                 json=json_dict,
@@ -435,13 +441,17 @@ class Session(properties.HasProperties):
             if isinstance(resource,
                           files.Array) and resource.array is not None:
                 if verbose:
-                    print('uploading binary array data')
-                file_resp = utils.upload_array(resource.array, url, chunk_size)
+                    print('    ... Initiating binary array upload')
+                file_resp = utils.upload_array(
+                    resource.array, url, chunk_size, self.session,
+                )
             elif isinstance(resource,
                             files.Image) and resource.image is not None:
                 if verbose:
-                    print('uploading binary image data')
-                file_resp = utils.upload_image(resource.image, url, chunk_size)
+                    print('    ... Initiating binary image upload')
+                file_resp = utils.upload_image(
+                    resource.image, url, chunk_size, self.session,
+                )
             else:
                 raise ValueError(
                     'Unknown file resource: {}'.format(
@@ -451,9 +461,9 @@ class Session(properties.HasProperties):
             if not file_resp.ok:
                 raise ValueError(file_resp.text)
         if thumbnail and 'thumbnail' in resp.json()['links']:
-            if verbose:
-                print('uploading thumbnail')
             thumb_file = files.Thumbnail(thumbnail)
+            if verbose:
+                print('    ... Initiating thumbnail upload')
             thumb_resp = self.session.put(
                 resp.json()['links']['thumbnail'],
                 json=thumb_file.serialize(include_class=False),
@@ -463,9 +473,8 @@ class Session(properties.HasProperties):
                     thumb_file.image,
                     thumb_resp.json()['links']['location'],
                     chunk_size,
+                    self.session,
                 )
-        if verbose:
-            print('success!')
         return resource._url
 
     def download(

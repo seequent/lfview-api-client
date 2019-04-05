@@ -29,11 +29,12 @@ def upload_chunk(url, dat, start, stop, total, content_type, session):
     return res
 
 
-def upload_array(arr, url, chunk_size=CHUNK_SIZE):
+def upload_array(arr, url, chunk_size=CHUNK_SIZE, session=None):
     """Upload an array to specified URL"""
     length = arr.nbytes
     arr_bytes = arr.tobytes()
-    session = requests.Session()
+    if not session:
+        session = requests.Session()
     for start in range(0, length, chunk_size):
         stop = min(start + chunk_size, length)
         res = upload_chunk(
@@ -48,11 +49,12 @@ def upload_array(arr, url, chunk_size=CHUNK_SIZE):
     return res
 
 
-def upload_image(img, url, chunk_size=CHUNK_SIZE):
+def upload_image(img, url, chunk_size=CHUNK_SIZE, session=None):
     """Upload an image to specified URL"""
     img.seek(0, 2)
     length = img.tell()
-    session = requests.Session()
+    if not session:
+        session = requests.Session()
     for start in range(0, length, chunk_size):
         stop = min(start + chunk_size, length)
         img.seek(start)
