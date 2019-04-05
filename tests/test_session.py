@@ -125,6 +125,8 @@ def test_invite(mock_post, session):
     )
 
 
+@pytest.mark.parametrize('parallel', [True, False])
+@pytest.mark.parametrize('workers', [None, 5])
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.requests.Session.post')
 @mock.patch('lfview.client.session.requests.Session.patch')
@@ -134,7 +136,7 @@ def test_invite(mock_post, session):
 @mock.patch('lfview.resources.files.base._BaseUIDModel.pointer_regex')
 def test_upload(
         mock_regex, mock_upload_image, mock_upload_array, mock_put, mock_patch,
-        mock_post, verbose, session
+        mock_post, verbose, workers, parallel, session
 ):
     mock_resp = mock.MagicMock()
     mock_resp.json.return_value = {
@@ -222,7 +224,13 @@ def test_upload(
         w.write(f, s)
         f.close()
 
-        session.upload(view, verbose=verbose, thumbnail=png_file)
+        session.upload(
+            view,
+            verbose=verbose,
+            thumbnail=png_file,
+            parallel=parallel,
+            workers=workers,
+        )
     finally:
         os.remove(png_file)
 

@@ -1,6 +1,12 @@
 """User session for logging in, uploading, downloading, etc"""
 from io import BytesIO
 
+try:
+    from concurrent.futures import ThreadPoolExecutor, Future
+    PARALLEL = True
+except ImportError:
+    PARALLEL = False
+
 from lfview.resources import files, manifests, scene, spatial
 import numpy as np
 import properties
@@ -173,7 +179,7 @@ class Session(properties.HasProperties):
             raise ValueError(resp.text)
         return resp
 
-    def _construct_upload_dict(self, resource, **upload_kwargs):
+    def _construct_upload_dict(self, resource, executor=None, **upload_kwargs):
         """Method to construct upload body from resource with pointers"""
         json_dict = {}
         for name, prop in resource._props.items():
@@ -183,6 +189,8 @@ class Session(properties.HasProperties):
             elif utils.is_pointer(prop):
                 if isinstance(value, string_types):
                     url = value
+                elif executor:
+                    url = executor.submit(self.upload, value, **upload_kwargs)
                 else:
                     url = self.upload(value, **upload_kwargs)
                 json_dict.update({name: url})
@@ -191,6 +199,8 @@ class Session(properties.HasProperties):
                 for val in value:
                     if isinstance(val, string_types):
                         url = val
+                    elif executor:
+                        url = executor.submit(self.upload, val, **upload_kwargs)
                     else:
                         url = self.upload(val, **upload_kwargs)
                     json_list.append(url)
@@ -208,6 +218,9 @@ class Session(properties.HasProperties):
             update_contents=True,
             thumbnail=None,
             chunk_size=CHUNK_SIZE,
+            parallel=PARALLEL,
+            workers=10,
+            executor=None,
     ):
         """Upload new resource to your Project or update existing resource
 
@@ -234,16 +247,24 @@ class Session(properties.HasProperties):
             )
         if isinstance(resource, scene.Slide):
             raise ValueError('Use upload_slide method for Slides')
+        if verbose:
+            print('Starting upload of {}'.format(resource.__class__.__name__))
         if isinstance(resource, spatial.DataBasic):
             resource = utils.sanitize_data_colormaps(resource)
         if isinstance(resource, manifests.View) and update_contents:
             resource.contents = utils.compute_children(resource)
         resource.validate()
+        if parallel and not executor:
+            executor = ThreadPoolExecutor(max_workers=workers)
+            shutdown_executor = True
+        else:
+            shutdown_executor = False
         json_dict = self._construct_upload_dict(
             resource,
             verbose=verbose,
             chunk_size=chunk_size,
-            update_contents=update_contents
+            update_contents=update_contents,
+            executor=executor,
         )
         output_url = self._upload(
             resource=resource,
@@ -253,6 +274,10 @@ class Session(properties.HasProperties):
             post_url=PROJECT_UPLOAD_URL,
             thumbnail=thumbnail,
         )
+        if shutdown_executor:
+            executor.shutdown(wait=True)
+        if verbose:
+            print('Finished upload of {}'.format(resource.__class__.__name__))
         return output_url
 
     def upload_slide(
@@ -370,9 +395,15 @@ class Session(properties.HasProperties):
         Use :code:`upload`, :code:`upload_slide`, or :code:`upload_feedback`
         instead.
         """
+        for key, value in json_dict.items():
+            if isinstance(value, Future):
+                json_dict[key] = value.result()
+            elif isinstance(value, list):
+                json_dict[key] = [
+                    val.result() if isinstance(val, Future) else val
+                    for val in value
+                ]
         if not getattr(resource, '_url', None):
-            if verbose:
-                print('uploading {}'.format(resource.__class__.__name__))
             resp = self.session.post(
                 post_url.format(
                     base=self.endpoint,
