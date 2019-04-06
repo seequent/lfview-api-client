@@ -1,4 +1,6 @@
 """User session for logging in, uploading, downloading, etc"""
+from __future__ import print_function
+
 from io import BytesIO
 
 try:
@@ -27,6 +29,8 @@ from .constants import (
 from . import utils
 
 __version__ = '0.0.1'
+
+VERBOSE_END = 20*' ' + '\r'
 
 
 class Session(properties.HasProperties):
@@ -179,38 +183,6 @@ class Session(properties.HasProperties):
             raise ValueError(resp.text)
         return resp
 
-    def _construct_upload_dict(self, resource, executor=None, **upload_kwargs):
-        """Method to construct upload body from resource with pointers"""
-        json_dict = {}
-        for name, prop in resource._props.items():
-            value = getattr(resource, name)
-            if name in IGNORED_PROPS or value is None:
-                continue
-            elif utils.is_pointer(prop):
-                if isinstance(value, string_types):
-                    url = value
-                elif executor:
-                    url = executor.submit(self.upload, value, **upload_kwargs)
-                else:
-                    url = self.upload(value, **upload_kwargs)
-                json_dict.update({name: url})
-            elif utils.is_list_of_pointers(prop):
-                json_list = []
-                for val in value:
-                    if isinstance(val, string_types):
-                        url = val
-                    elif executor:
-                        url = executor.submit(self.upload, val, **upload_kwargs)
-                    else:
-                        url = self.upload(val, **upload_kwargs)
-                    json_list.append(url)
-                json_dict.update({name: json_list})
-            else:
-                json_dict.update(
-                    {name: prop.serialize(value, include_class=False)}
-                )
-        return json_dict
-
     def upload(
             self,
             resource,
@@ -219,8 +191,9 @@ class Session(properties.HasProperties):
             thumbnail=None,
             chunk_size=CHUNK_SIZE,
             parallel=PARALLEL,
-            workers=10,
-            executor=None,
+            workers=100,
+            _executor=None,
+            _cleanup=True
     ):
         """Upload new resource to your Project or update existing resource
 
@@ -248,37 +221,49 @@ class Session(properties.HasProperties):
         if isinstance(resource, scene.Slide):
             raise ValueError('Use upload_slide method for Slides')
         if verbose:
-            print('Starting upload of {}'.format(resource.__class__.__name__))
+            print('\rStarting upload of {}'.format(resource), end=VERBOSE_END)
         if isinstance(resource, spatial.DataBasic):
             resource = utils.sanitize_data_colormaps(resource)
         if isinstance(resource, manifests.View) and update_contents:
             resource.contents = utils.compute_children(resource)
         resource.validate()
-        if parallel and not executor:
-            executor = ThreadPoolExecutor(max_workers=workers)
+        if parallel and not _executor:
+            if verbose:
+                print('\rInitializing thread pool', end=VERBOSE_END)
+            _executor = ThreadPoolExecutor(max_workers=workers)
             shutdown_executor = True
         else:
             shutdown_executor = False
-        json_dict = self._construct_upload_dict(
-            resource,
-            verbose=verbose,
-            chunk_size=chunk_size,
-            update_contents=update_contents,
-            executor=executor,
-        )
-        output_url = self._upload(
-            resource=resource,
-            verbose=verbose,
-            chunk_size=chunk_size,
-            json_dict=json_dict,
-            post_url=PROJECT_UPLOAD_URL,
-            thumbnail=thumbnail,
-        )
-        if shutdown_executor:
-            executor.shutdown(wait=True)
-        if verbose:
-            print('Finished upload of {}'.format(resource.__class__.__name__))
-        return output_url
+        try:
+            json_dict = self._construct_upload_dict(
+                resource=resource,
+                executor=_executor,
+                verbose=verbose,
+                update_contents=update_contents,
+                chunk_size=chunk_size,
+                parallel=parallel,
+                _cleanup=False
+            )
+            output_url = self._upload(
+                resource=resource,
+                verbose=verbose,
+                chunk_size=chunk_size,
+                json_dict=json_dict,
+                post_url=PROJECT_UPLOAD_URL,
+                thumbnail=thumbnail,
+            )
+            if verbose:
+                print(
+                    '\rFinished upload of {}'.format(resource),
+                    end='\n' if _cleanup else VERBOSE_END,
+                )
+            return output_url
+        finally:
+            if _cleanup:
+                utils.recursive_setattr(resource, True, '_upload_output', None)
+            if shutdown_executor:
+                _executor.shutdown(wait=True)
+
 
     def upload_slide(
             self,
@@ -392,8 +377,50 @@ class Session(properties.HasProperties):
             thumbnail=None,
         )
         if verbose:
-            print('Finished upload of {}'.format(feedback.__class__.__name__))
+            print('\rFinished upload of {}'.format(feedback))
         return output_url
+
+    def _construct_upload_dict(self, resource, executor=None, **upload_kwargs):
+        """Method to construct upload body from resource with pointers"""
+        json_dict = {}
+        for name, prop in resource._props.items():
+            value = getattr(resource, name)
+            if name in IGNORED_PROPS or value is None:
+                continue
+            if utils.is_pointer(prop):
+                json_value = self._pointer_upload(
+                    value, executor, **upload_kwargs
+                )
+            elif utils.is_list_of_pointers(prop):
+                json_value = []
+                for val in value:
+                    json_value.append(
+                        self._pointer_upload(val, executor, **upload_kwargs)
+                    )
+            else:
+                json_value = prop.serialize(value, include_class=False)
+            json_dict.update({name: json_value})
+        return json_dict
+
+    def _pointer_upload(self, value, executor, **upload_kwargs):
+        """Method to decide how to upload pointer value"""
+        if isinstance(value, string_types):
+            return value
+        elif getattr(value, '_upload_output', None) is not None:
+            pass
+        elif not executor:
+            value._upload_output = self.upload(
+                resource=value,
+                **upload_kwargs
+            )
+        else:
+            value._upload_output = executor.submit(
+                self.upload,
+                resource=value,
+                _executor=executor,
+                **upload_kwargs
+            )
+        return value._upload_output
 
     def _upload(
             self, resource, verbose, chunk_size, json_dict, post_url, thumbnail
@@ -425,8 +452,7 @@ class Session(properties.HasProperties):
                 ),
                 json=json_dict,
             )
-        elif (getattr(resource, '_url', None)
-              and getattr(resource, '_touched', True)):
+        elif getattr(resource, '_touched', True):
             resp = self.session.patch(
                 resource._url,
                 json=json_dict,
