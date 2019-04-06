@@ -76,7 +76,10 @@ class Session(properties.HasProperties):
             headers.update({'Source': self.source})
         return headers
 
-    @properties.Instance('Requests session object', instance_class=requests.Session)
+    @properties.Instance(
+        'Underlying requests session object',
+        instance_class=requests.Session,
+    )
     def session(self):
         if not getattr(self, '_session', None):
             self._session = requests.Session()
@@ -212,7 +215,11 @@ class Session(properties.HasProperties):
         * **thumbnail** - image to upload as thumbnail for the View; this
           may also be updated in the web app.
         * **chunk_size** - chunk size for file upload, must be a multiple
-          of 256 * 1024. By default, 1 * 256 * 1024 is used.
+          of 256 * 1024. By default, 20 MB (80 * 256 * 1024) is used.
+        * **parallel** - Perform concurrent uploads using Python threading.
+          By default, this is True if concurrent.futures is available.
+        * **workers** - Maximum number of thread workers to use; ignored
+          if parallel=False. Default is 100.
         """
         if not hasattr(resource, 'BASE_TYPE'):
             raise ValueError(
@@ -286,7 +293,7 @@ class Session(properties.HasProperties):
         * **thumbnail** - image to upload as thumbnail for the slide; this
           may also be updated in the web app.
         * **chunk_size** - chunk size for thumbnail upload, must be a
-          multiple of 256 * 1024. By default, 1 * 256 * 1024 is used.
+          multiple of 256 * 1024. By default, 20 MB (80 * 256 * 1024) is used.
         """
         if not isinstance(slide, scene.Slide):
             raise ValueError(
@@ -307,7 +314,7 @@ class Session(properties.HasProperties):
         else:
             post_url = None
         if verbose:
-            print('Starting upload of {}'.format(slide.__class__.__name__))
+            print('\rStarting upload of {}'.format(slide), end=VERBOSE_END)
         if autofill_plane and slide.scene.camera and not slide.annotation_plane:
             slide.annotation_plane = utils.drawing_plane_from_camera(
                 slide.scene.camera
@@ -331,7 +338,7 @@ class Session(properties.HasProperties):
             thumbnail=thumbnail,
         )
         if verbose:
-            print('Finished upload of {}'.format(slide.__class__.__name__))
+            print('\rFinished upload of {}'.format(slide))
         return output_url
 
     def upload_feedback(self, feedback, slide_url=None, verbose=True):
@@ -363,7 +370,7 @@ class Session(properties.HasProperties):
         else:
             post_url = None
         if verbose:
-            print('Starting upload of {}'.format(feedback.__class__.__name__))
+            print('\rStarting upload of {}'.format(feedback), end=VERBOSE_END)
         feedback.validate()
         json_dict = feedback.serialize(include_class=False)
         for name in IGNORED_PROPS:
@@ -467,14 +474,20 @@ class Session(properties.HasProperties):
             if isinstance(resource,
                           files.Array) and resource.array is not None:
                 if verbose:
-                    print('    ... Initiating binary array upload')
+                    print(
+                        '\r   Array upload of {}'.format(resource),
+                        end=VERBOSE_END
+                    )
                 file_resp = utils.upload_array(
                     resource.array, url, chunk_size, self.session,
                 )
             elif isinstance(resource,
                             files.Image) and resource.image is not None:
                 if verbose:
-                    print('    ... Initiating binary image upload')
+                    print(
+                        '\r   Image upload of {}'.format(resource),
+                        end=VERBOSE_END
+                    )
                 file_resp = utils.upload_image(
                     resource.image, url, chunk_size, self.session,
                 )
@@ -489,7 +502,10 @@ class Session(properties.HasProperties):
         if thumbnail and 'thumbnail' in resp.json()['links']:
             thumb_file = files.Thumbnail(thumbnail)
             if verbose:
-                print('    ... Initiating thumbnail upload')
+                print(
+                    '\r   Thumb upload of {}'.format(resource),
+                    end=VERBOSE_END
+                )
             thumb_resp = self.session.put(
                 resp.json()['links']['thumbnail'],
                 json=thumb_file.serialize(include_class=False),
