@@ -411,3 +411,10 @@ def sanitize_data_colormaps(data):
         new_mapping.values = ['random'] * len(new_mapping.values)
         data.mappings = [new_mapping] + data.mappings
     return data
+
+def log(message, final=True, total_length=70):
+    end_buffer = total_length - len(message)
+    print(
+        '\r{}'.format(message),
+        end=end_buffer*' ' + ('\n' if final else '\r'),
+    )

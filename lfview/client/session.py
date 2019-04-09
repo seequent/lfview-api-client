@@ -30,8 +30,6 @@ from . import utils
 
 __version__ = '0.0.1'
 
-VERBOSE_END = 20*' ' + '\r'
-
 
 class Session(properties.HasProperties):
     """User session object for performing API calls"""
@@ -119,7 +117,7 @@ class Session(properties.HasProperties):
             'description': description or '',
         }
         resp = self.session.post(
-            ORG_ENDPOINT.format(base=self.endpoint, ),
+            ORG_ENDPOINT.format(base=self.endpoint),
             json=json_dict,
         )
         if not resp.ok:
@@ -196,7 +194,7 @@ class Session(properties.HasProperties):
             parallel=PARALLEL,
             workers=100,
             _executor=None,
-            _cleanup=True
+            _cleanup=True,
     ):
         """Upload new resource to your Project or update existing resource
 
@@ -228,7 +226,7 @@ class Session(properties.HasProperties):
         if isinstance(resource, scene.Slide):
             raise ValueError('Use upload_slide method for Slides')
         if verbose:
-            print('\rStarting upload of {}'.format(resource), end=VERBOSE_END)
+            utils.log('Starting upload of {}'.format(resource), False)
         if isinstance(resource, spatial.DataBasic):
             resource = utils.sanitize_data_colormaps(resource)
         if isinstance(resource, manifests.View) and update_contents:
@@ -236,7 +234,7 @@ class Session(properties.HasProperties):
         resource.validate()
         if parallel and not _executor:
             if verbose:
-                print('\rInitializing thread pool', end=VERBOSE_END)
+                utils.log('Initializing thread pool', False)
             _executor = ThreadPoolExecutor(max_workers=workers)
             shutdown_executor = True
         else:
@@ -260,10 +258,7 @@ class Session(properties.HasProperties):
                 thumbnail=thumbnail,
             )
             if verbose:
-                print(
-                    '\rFinished upload of {}'.format(resource),
-                    end='\n' if _cleanup else VERBOSE_END,
-                )
+                utils.log('Finished upload of {}'.format(resource), _cleanup)
             return output_url
         finally:
             if _cleanup:
@@ -279,7 +274,7 @@ class Session(properties.HasProperties):
             verbose=False,
             autofill_plane=True,
             thumbnail=None,
-            chunk_size=CHUNK_SIZE
+            chunk_size=CHUNK_SIZE,
     ):
         """Upload a Slide to a View
 
@@ -314,7 +309,7 @@ class Session(properties.HasProperties):
         else:
             post_url = None
         if verbose:
-            print('\rStarting upload of {}'.format(slide), end=VERBOSE_END)
+            utils.log('Starting upload of {}'.format(slide), False)
         if autofill_plane and slide.scene.camera and not slide.annotation_plane:
             slide.annotation_plane = utils.drawing_plane_from_camera(
                 slide.scene.camera
@@ -338,7 +333,7 @@ class Session(properties.HasProperties):
             thumbnail=thumbnail,
         )
         if verbose:
-            print('\rFinished upload of {}'.format(slide))
+            utils.log('Finished upload of {}'.format(slide))
         return output_url
 
     def upload_feedback(self, feedback, slide_url=None, verbose=True):
@@ -370,7 +365,7 @@ class Session(properties.HasProperties):
         else:
             post_url = None
         if verbose:
-            print('\rStarting upload of {}'.format(feedback), end=VERBOSE_END)
+            utils.log('Starting upload of {}'.format(feedback), False)
         feedback.validate()
         json_dict = feedback.serialize(include_class=False)
         for name in IGNORED_PROPS:
@@ -384,7 +379,7 @@ class Session(properties.HasProperties):
             thumbnail=None,
         )
         if verbose:
-            print('\rFinished upload of {}'.format(feedback))
+            utils.log('Finished upload of {}'.format(feedback))
         return output_url
 
     def _construct_upload_dict(self, resource, executor=None, **upload_kwargs):
@@ -474,20 +469,14 @@ class Session(properties.HasProperties):
             if isinstance(resource,
                           files.Array) and resource.array is not None:
                 if verbose:
-                    print(
-                        '\r   Array upload of {}'.format(resource),
-                        end=VERBOSE_END
-                    )
+                    utils.log('   Array upload of {}'.format(resource), False)
                 file_resp = utils.upload_array(
                     resource.array, url, chunk_size, self.session,
                 )
             elif isinstance(resource,
                             files.Image) and resource.image is not None:
                 if verbose:
-                    print(
-                        '\r   Image upload of {}'.format(resource),
-                        end=VERBOSE_END
-                    )
+                    utils.log('   Image upload of {}'.format(resource), False)
                 file_resp = utils.upload_image(
                     resource.image, url, chunk_size, self.session,
                 )
@@ -502,10 +491,7 @@ class Session(properties.HasProperties):
         if thumbnail and 'thumbnail' in resp.json()['links']:
             thumb_file = files.Thumbnail(thumbnail)
             if verbose:
-                print(
-                    '\r   Thumb upload of {}'.format(resource),
-                    end=VERBOSE_END
-                )
+                utils.log('   Thumb upload of {}'.format(resource), False)
             thumb_resp = self.session.put(
                 resp.json()['links']['thumbnail'],
                 json=thumb_file.serialize(include_class=False),
