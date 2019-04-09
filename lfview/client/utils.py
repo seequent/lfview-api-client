@@ -1,8 +1,12 @@
 """Utility functions to support session uploads and downloads"""
+from __future__ import print_function
+
 from collections import OrderedDict
+from io import BytesIO
 import re
 
-from lfview.resources import files, scene, spatial
+from lfview.resources import files, manifests, scene, spatial
+import numpy as np
 import properties
 import properties.extras
 import requests
@@ -86,6 +90,14 @@ def is_list_of_pointers(prop):
     return is_pointer(prop.prop)
 
 
+def find_class_from_resp(url, resp_type=None):
+    if resp_type:
+        if '/' in resp_type:
+            return find_class(*resp_type.split('/'))
+        return find_class(resp_type, None)
+    return find_class(*types_from_url(url))
+
+
 def find_class(base_type, sub_type):
     """Search resource registries class that matches specified type"""
     if base_type:
@@ -158,6 +170,70 @@ def process_uploaded_resource(resource, url):
         )
     resource._touched = False
     return resource
+
+
+def build_resource_from_json(url, resource_json, copy):
+    """Helper method to construct Python object from resource JSON"""
+    resource_class = find_class_from_resp(
+        url=url,
+        resp_type=resource_json.get('type')
+    )
+    resource = resource_class.deserialize(
+        properties.filter_props(resource_class, resource_json)[0]
+    )
+    # Patch in elements since they may not be present on API response
+    if (isinstance(resource, manifests.View)
+            and 'elements' not in resource_json):
+        resource.elements = [
+            item for item in resource.contents
+            if item.split('/')[-3] == 'elements'
+        ]
+    if isinstance(resource, files.base._BaseFile):
+        file_resp = resource_json['links']['location']
+        if not file_resp.ok:
+            raise ValueError(file_resp.text)
+        data = file_resp.content
+        if isinstance(resource, files.Array):
+            resource.array = np.frombuffer(
+                buffer=data,
+                dtype=files.files.ARRAY_DTYPES[resource.dtype][0],
+            ).reshape(resource.shape)
+        elif isinstance(resource, files.Image):
+            fid = BytesIO()
+            fid.write(data)
+            fid.seek(0)
+            resource.image = fid
+        else:
+            raise ValueError(
+                'Unknown file resource: {}'.format(
+                    resource.__class__.__name__
+                )
+            )
+    if not copy:
+        process_uploaded_resource(resource, url)
+    return resource
+
+
+def populate_resource_pointers(resource, lookup_dict):
+    """Helper method to update pointer URLs with corresponding objects"""
+    for name, prop in sorted(resource._props.items()):
+        value = getattr(resource, name)
+        if value is None:
+            continue
+        elif is_pointer(prop):
+            if value not in lookup_dict:
+                new_value = value
+            else:
+                new_value = lookup_dict[value]
+            setattr(resource, name, new_value)
+        elif is_list_of_pointers(prop):
+            new_value_list = []
+            for val in value:
+                if val not in lookup_dict:
+                    new_value_list.append(val)
+                else:
+                    new_value_list.append(lookup_dict[val])
+            setattr(resource, name, new_value_list)
 
 
 def match_url_app(url):

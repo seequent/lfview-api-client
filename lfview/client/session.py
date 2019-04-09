@@ -1,8 +1,4 @@
 """User session for logging in, uploading, downloading, etc"""
-from __future__ import print_function
-
-from io import BytesIO
-
 try:
     from concurrent.futures import ThreadPoolExecutor, Future
     PARALLEL = True
@@ -10,7 +6,6 @@ except ImportError:
     PARALLEL = False
 
 from lfview.resources import files, manifests, scene, spatial
-import numpy as np
 import properties
 import requests
 from six import string_types
@@ -512,8 +507,9 @@ class Session(properties.HasProperties):
             copy=False,
             verbose=False,
             allow_failure=False,
-            chunk_size=CHUNK_SIZE,
-            _lookup_dict=None,
+            parallel=PARALLEL,
+            workers=100,
+            _executor=None,
     ):
         """Download resources from a Project
 
@@ -535,8 +531,112 @@ class Session(properties.HasProperties):
           returns the url rather than raising an error. This is possibly
           useful when recursively downloading a View with limited permissions.
           Default is False.
-        * **chunk_size** - chunk size for file upload, must be a multiple
-          of 256 * 1024. By default, 1 * 256 * 1024 is used.
+        * **parallel** - Perform concurrent downloads using Python threading.
+          By default, this is True if concurrent.futures is available.
+        * **workers** - Maximum number of thread workers to use; ignored
+          if parallel=False. Default is 100.
+        """
+        if verbose:
+            utils.log('Starting download', False)
+        if recursive and parallel and not _executor:
+            if verbose:
+                utils.log('Initializing thread pool', False)
+            _executor = ThreadPoolExecutor(max_workers=workers)
+        lookup_dict = {url: None}
+        while True:
+            downloads_complete = True
+            for key, value in lookup_dict.copy().items():
+                if value is None:
+                    downloads_complete = False
+                    kwargs = {
+                        'url': key,
+                        'recursive': recursive,
+                        'verbose': verbose,
+                        'allow_failure': allow_failure,
+                        'executor': _executor,
+                        'lookup_dict': lookup_dict,
+                    }
+                    if _executor:
+                        lookup_dict[key] = _executor.submit(
+                            self._download_resource_json,
+                            **kwargs
+                        )
+                    else:
+                        lookup_dict[key] = self._download_resource_json(
+                            **kwargs
+                        )
+                elif isinstance(value, Future):
+                    downloads_complete = False
+                    if value.done():
+                        lookup_dict[key] = value.result()
+                elif isinstance(value, dict):
+                    location = value.get('links', {}).get('location')
+                    if not location:
+                        continue
+                    if isinstance(location, string_types):
+                        downloads_complete = False
+                        if _executor:
+                            value['links']['location'] = _executor.submit(
+                                self.session.get, location,
+                            )
+                        else:
+                            value['links']['location'] = self.session.get(
+                                location,
+                            )
+                    elif isinstance(location, Future):
+                        if location.done():
+                            if verbose:
+                                file_type = value.get('type', '/file')
+                                utils.log(
+                                    'Downloaded binary data for {} {}'.format(
+                                        file_type.split('/')[1].title(),
+                                        value.get('uid', ''),
+                                    ),
+                                    False,
+                                )
+                            value['links']['location'] = location.result()
+                        else:
+                            downloads_complete = False
+            if downloads_complete:
+                break
+
+        if _executor:
+            _executor.shutdown(wait=True)
+
+        if verbose:
+            utils.log('Constructing resources from data', False)
+
+        for key, value in lookup_dict.items():
+            if isinstance(value, dict):
+                lookup_dict[key] = utils.build_resource_from_json(
+                    key, value, copy
+                )
+
+        for resource in lookup_dict.values():
+            if isinstance(resource, files.base._BaseUIDModel):
+                utils.populate_resource_pointers(resource, lookup_dict)
+
+        if verbose:
+            utils.log(
+                'Finished download of {}'.format(
+                    lookup_dict[url].__class__.__name__,
+                ),
+            )
+        return lookup_dict[url]
+
+    def _download_resource_json(
+            self,
+            url,
+            recursive,
+            verbose,
+            allow_failure,
+            executor,
+            lookup_dict,
+    ):
+        """Helper method to fetch resource JSON
+
+        Download from the provided URL and update the lookup_dict
+        with additional resource URLs.
         """
         resp = None
         # If /app/ url is provided, attempt to use Project API url, but
@@ -557,114 +657,43 @@ class Session(properties.HasProperties):
             if allow_failure:
                 return url
             raise ValueError('Unable to download {}'.format(url))
-
+        resource_json = resp.json()
         # Get resource type and instantiate the resource
-        if 'type' in resp.json():
-            resource_type = resp.json()['type']
-            if '/' in resource_type:
-                base_type, sub_type = resource_type.split('/')
-            else:
-                base_type, sub_type = resource_type, None
-        else:
-            base_type, sub_type = utils.types_from_url(url)
-        resource_class = utils.find_class(base_type, sub_type)
-        if verbose:
-            print('Downloading {}'.format(resource_class.__name__))
-
-        resource = resource_class.deserialize(
-            properties.filter_props(resource_class, resp.json())[0]
+        resource_class = utils.find_class_from_resp(
+            url=url,
+            resp_type=resource_json.get('type')
         )
-
+        if verbose:
+            utils.log(
+                'Downloaded metadata for {} {}'.format(
+                    resource_class.__name__,
+                    resource_json.get('uid', ''),
+                ),
+                False,
+            )
         # Do not attempt recursive download of Slide/Feedback
-        if isinstance(resource, scene.slide._BaseCollaborationModel):
+        if issubclass(resource_class, scene.slide._BaseCollaborationModel):
             recursive = False
 
-        # Patch in elements since they may not be present on API response
-        if (isinstance(resource, manifests.View)
-                and 'elements' not in resp.json()):
-            resource.elements = [
-                item for item in resource.contents
-                if item.split('/')[-3] == 'elements'
-            ]
-
-        # Download binary data
-        if isinstance(resource, files.base._BaseFile):
-            if verbose:
-                print('Downloading binary data')
-            file_resp = self.session.get(resp.json()['links']['location'])
-            if not file_resp.ok:
-                raise ValueError(file_resp.text)
-            data = file_resp.content
-            if isinstance(resource, files.Array):
-                resource._array = np.frombuffer(
-                    buffer=data,
-                    dtype=files.files.ARRAY_DTYPES[resource.dtype][0],
-                ).reshape(resource.shape)
-            elif isinstance(resource, files.Image):
-                fid = BytesIO()
-                fid.write(data)
-                fid.seek(0)
-                resource._image = fid
-            else:
-                raise ValueError(
-                    'Unknown file resource: {}'.format(
-                        resource.__class__.__name__
-                    )
-                )
-
         if recursive:
-            if _lookup_dict is None:
-                _lookup_dict = {}
-            _lookup_dict.update({url: resource})
-            self._recursive_download(
-                resource=resource,
-                recursive=recursive,
-                copy=copy,
-                verbose=verbose,
-                allow_failure=allow_failure,
-                chunk_size=chunk_size,
-                _lookup_dict=_lookup_dict,
-            )
-        if not copy:
-            utils.process_uploaded_resource(resource, url)
-        return resource
-
-    def _recursive_download(self, resource, _lookup_dict, **download_kwargs):
-        """Download all pointers recursively and set them on the resource"""
-        for name, prop in sorted(resource._props.items()):
-            value = getattr(resource, name)
-            if value is None:
-                continue
-            elif utils.is_pointer(prop):
-                if isinstance(value, string_types):
-                    if value in _lookup_dict:
-                        res = _lookup_dict.get(value)
-                    else:
-                        res = self.download(
-                            url=value,
-                            _lookup_dict=_lookup_dict,
-                            **download_kwargs
-                        )
-                else:
-                    res = value
-                setattr(resource, name, res)
-            elif utils.is_list_of_pointers(prop):
-                res_list = []
-                for val in value:
-                    if isinstance(val, string_types):
-                        if val in _lookup_dict:
-                            res = _lookup_dict.get(val)
-                        else:
-                            res = self.download(
-                                url=val,
-                                _lookup_dict=_lookup_dict,
-                                **download_kwargs
-                            )
-                    else:
-                        res = val
-                    res_list.append(res)
-                setattr(resource, name, res_list)
-        return resource
+            for name, prop in sorted(resource_class._props.items()):
+                value = resource_json.get(name)
+                if not value:
+                    continue
+                if (
+                        utils.is_pointer(prop) and
+                        isinstance(value, string_types) and
+                        value not in lookup_dict
+                ):
+                    lookup_dict.update({value: None})
+                elif utils.is_list_of_pointers(prop):
+                    for val in value:
+                        if (
+                                isinstance(val, string_types) and
+                                val not in lookup_dict
+                        ):
+                            lookup_dict.update({val: None})
+        return resource_json
 
     def delete(self, resource):
         """Delete a downloaded resource
