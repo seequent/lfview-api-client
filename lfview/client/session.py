@@ -50,9 +50,7 @@ class Session(properties.HasProperties):
         if source is not None:
             kwargs.update({'source': source})
         super(Session, self).__init__(**kwargs)
-        resp = self.session.get(
-            url=USER_ENDPOINT.format(base=self.endpoint),
-        )
+        resp = self.session.get(url=USER_ENDPOINT.format(base=self.endpoint))
         if not resp.ok:
             raise ValueError('Invalid api key or endpoint')
         self.org = resp.json()['uid']
@@ -545,7 +543,7 @@ class Session(properties.HasProperties):
         lookup_dict = {url: None}
         while True:
             downloads_complete = True
-            for key, value in lookup_dict.copy().items():
+            for key, value in sorted(lookup_dict.copy().items()):
                 if value is None:
                     downloads_complete = False
                     kwargs = {
@@ -558,8 +556,7 @@ class Session(properties.HasProperties):
                     }
                     if _executor:
                         lookup_dict[key] = _executor.submit(
-                            self._download_resource_json,
-                            **kwargs
+                            self._download_resource_json, **kwargs
                         )
                     else:
                         lookup_dict[key] = self._download_resource_json(
@@ -577,7 +574,8 @@ class Session(properties.HasProperties):
                         downloads_complete = False
                         if _executor:
                             value['links']['location'] = _executor.submit(
-                                self.session.get, location,
+                                self.session.get,
+                                location,
                             )
                         else:
                             value['links']['location'] = self.session.get(
@@ -660,8 +658,7 @@ class Session(properties.HasProperties):
         resource_json = resp.json()
         # Get resource type and instantiate the resource
         resource_class = utils.find_class_from_resp(
-            url=url,
-            resp_type=resource_json.get('type')
+            url=url, resp_type=resource_json.get('type')
         )
         if verbose:
             utils.log(
@@ -680,18 +677,13 @@ class Session(properties.HasProperties):
                 value = resource_json.get(name)
                 if not value:
                     continue
-                if (
-                        utils.is_pointer(prop) and
-                        isinstance(value, string_types) and
-                        value not in lookup_dict
-                ):
+                if (utils.is_pointer(prop) and isinstance(value, string_types)
+                        and value not in lookup_dict):
                     lookup_dict.update({value: None})
                 elif utils.is_list_of_pointers(prop):
                     for val in value:
-                        if (
-                                isinstance(val, string_types) and
-                                val not in lookup_dict
-                        ):
+                        if (isinstance(val, string_types)
+                                and val not in lookup_dict):
                             lookup_dict.update({val: None})
         return resource_json
 

@@ -593,10 +593,10 @@ def download_data():
 @pytest.mark.parametrize('copy', [True, False])
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.requests.Session.get')
-def test_non_recursive_download(mock_get, parallel, workers, copy, verbose, session, download_data):
-    mock_ok_resp = mock.MagicMock(
-        ok=True,
-    )
+def test_non_recursive_download(
+        mock_get, parallel, workers, copy, verbose, session, download_data
+):
+    mock_ok_resp = mock.MagicMock(ok=True)
 
     mock_file_resp = mock.MagicMock(
         ok=True,
@@ -636,7 +636,9 @@ def test_non_recursive_download(mock_get, parallel, workers, copy, verbose, sess
         'workers': workers,
     }
 
-    resource = session.download(download_data['view_url'], recursive=False, **kwargs)
+    resource = session.download(
+        download_data['view_url'], recursive=False, **kwargs
+    )
     mock_get.assert_called_once_with(download_data['view_url'])
     assert isinstance(resource, manifests.View)
     assert resource.name == 'Some Resource'
@@ -651,10 +653,10 @@ def test_non_recursive_download(mock_get, parallel, workers, copy, verbose, sess
 @pytest.mark.parametrize('copy', [True, False])
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.requests.Session.get')
-def test_url_failure_download(mock_get, parallel, workers, copy, verbose, session, download_data):
-    mock_ok_resp = mock.MagicMock(
-        ok=True,
-    )
+def test_url_failure_download(
+        mock_get, parallel, workers, copy, verbose, session, download_data
+):
+    mock_ok_resp = mock.MagicMock(ok=True)
 
     mock_file_resp = mock.MagicMock(
         ok=True,
@@ -703,23 +705,26 @@ def test_url_failure_download(mock_get, parallel, workers, copy, verbose, sessio
 @pytest.mark.parametrize('copy', [True, False])
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.requests.Session.get')
-def test_recursive_download(mock_get, parallel, workers, copy, verbose, session, download_data):
+def test_recursive_download(
+        mock_get, parallel, workers, copy, verbose, session, download_data
+):
     mock_ok_resp = mock.MagicMock(
         ok=True,
         content=np.array([[0., 0, 0], [1, 1, 1], [2, 2, 2]]).tobytes(),
     )
 
-    mock_file_resp = mock.MagicMock(
-        ok=True,
-    )
+    mock_file_resp = mock.MagicMock(ok=True)
 
     def download_data_copy(input_data):
         def inner():
             data = input_data.copy()
             for key, value in data.items():
-                if isinstance(value, (dict, list)):
+                if isinstance(value, dict):
                     data[key] = value.copy()
+                if isinstance(value, list):
+                    data[key] = [val for val in value]
             return data
+
         return inner
 
     mock_ok_resp.json.side_effect = download_data_copy(
@@ -746,13 +751,18 @@ def test_recursive_download(mock_get, parallel, workers, copy, verbose, session,
         'workers': workers,
     }
 
-
-    resource = session.download(download_data['view_url'], allow_failure=True, **kwargs)
+    resource = session.download(
+        download_data['view_url'], allow_failure=True, **kwargs
+    )
     assert mock_get.call_count == 10
     mock_get.assert_has_calls(
         [
+            mock.call('https://example.com/api/v1/view/org/proj/viewuid'),
             mock.call(
-                'https://example.com/api/v1/view/org/proj/viewuid',
+                'https://example.com/api/v1/view/org/proj/viewuid/data/basic/uid',
+            ),
+            mock.call(
+                'https://example.com/api/v1/view/org/proj/viewuid/elements/pointset/uid',
             ),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/files/array/uid',
@@ -761,22 +771,14 @@ def test_recursive_download(mock_get, parallel, workers, copy, verbose, session,
                 'https://example.com/api/v1/view/org/proj/viewuid/files/image/uid',
             ),
             mock.call(
-                'https://example.com/api/v1/view/org/proj/viewuid/elements/pointset/uid',
-            ),
-            mock.call(
-                'https://example.com/api/v1/view/org/proj/viewuid/data/basic/uid',
-            ),
-            mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/mappings/continuous/uid',
             ),
-            mock.call('https://example.com/some_file'),
-            mock.call('https://example.com/some_file'),
             mock.call(
                 'https://example.com/api/v1/project/org/proj/textures/projection/uid',
             ),
-            mock.call(
-                'https://example.com/unknown_service/files/array/uid',
-            ),
+            mock.call('https://example.com/some_file'),
+            mock.call('https://example.com/some_file'),
+            mock.call('https://example.com/unknown_service/files/array/uid'),
         ],
         any_order=parallel,
     )
@@ -806,12 +808,9 @@ def test_app_url(mock_get, verbose, session):
     mock_get.call_count == 2
     mock_get.assert_has_calls(
         [
-            mock.call(
-                'https://example.com/api/v1/project/org/proj/views/view',
-            ),
-            mock.call(
-                'https://example.com/api/v1/view/org/proj/view',
-            ),
+            mock.
+            call('https://example.com/api/v1/project/org/proj/views/view'),
+            mock.call('https://example.com/api/v1/view/org/proj/view'),
         ],
         any_order=True
     )

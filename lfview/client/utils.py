@@ -93,12 +93,12 @@ def is_list_of_pointers(prop):
 def find_class_from_resp(url, resp_type=None):
     if resp_type:
         if '/' in resp_type:
-            return find_class(*resp_type.split('/'))
-        return find_class(resp_type, None)
-    return find_class(*types_from_url(url))
+            return find_class_from_types(*resp_type.split('/'))
+        return find_class_from_types(resp_type, None)
+    return find_class_from_types(*types_from_url(url))
 
 
-def find_class(base_type, sub_type):
+def find_class_from_types(base_type, sub_type):
     """Search resource registries class that matches specified type"""
     if base_type:
         for registry in RESOURCE_REGISTRIES:
@@ -488,9 +488,10 @@ def sanitize_data_colormaps(data):
         data.mappings = [new_mapping] + data.mappings
     return data
 
+
 def log(message, final=True, total_length=70):
-    end_buffer = total_length - len(message)
+    end_buffer = max(20, total_length - len(message))
     print(
         '\r{}'.format(message),
-        end=end_buffer*' ' + ('\n' if final else '\r'),
+        end=end_buffer * ' ' + ('\n' if final else '\r'),
     )
