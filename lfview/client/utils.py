@@ -172,11 +172,37 @@ def process_uploaded_resource(resource, url):
     return resource
 
 
+def is_uploaded(resource):
+    if isinstance(resource, string_types):
+        return True
+    if not getattr(resource, '_url', None):
+        return False
+    return not getattr(resource, '_touched', True)
+
+
+def construct_upload_dict(resource):
+    """Method to construct upload body from resource with pointers"""
+    json_dict = {}
+    for name, prop in resource._props.items():
+        value = getattr(resource, name)
+        if name in IGNORED_PROPS or value is None:
+            continue
+        if is_pointer(prop):
+            json_value = getattr(value, '_url', value)
+        elif is_list_of_pointers(prop):
+            json_value = []
+            for val in value:
+                json_value.append(getattr(val, '_url', val))
+        else:
+            json_value = prop.serialize(value, include_class=False)
+        json_dict.update({name: json_value})
+    return json_dict
+
+
 def build_resource_from_json(url, resource_json, copy):
     """Helper method to construct Python object from resource JSON"""
     resource_class = find_class_from_resp(
-        url=url,
-        resp_type=resource_json.get('type')
+        url=url, resp_type=resource_json.get('type')
     )
     resource = resource_class.deserialize(
         properties.filter_props(resource_class, resource_json)[0]

@@ -44,7 +44,6 @@ def test_session(session):
     assert 'source' not in session.session.headers
 
 
-
 @mock.patch('lfview.client.session.requests.Session.post')
 def test_create_org(mock_post, session):
     mock_resp = mock.MagicMock()
@@ -430,7 +429,6 @@ def test_upload_slide(
         chunk_size=CHUNK_SIZE,
         json_dict=expected_json_dict,
         post_url=expected_post_url,
-        thumbnail=None,
     )
     mock_extra_validation.assert_called_once_with(slide, [])
 
@@ -508,7 +506,6 @@ def test_upload_feedback(mock_upload, feedback, slide_url, verbose, session):
             chunk_size=None,
             json_dict=expected_json_dict,
             post_url=expected_post_url,
-            thumbnail=None,
         )
     else:
         mock_upload.assert_called_once()
@@ -607,9 +604,12 @@ def test_non_recursive_download(
         def inner():
             data = input_data.copy()
             for key, value in data.items():
-                if isinstance(value, (dict, list)):
+                if isinstance(value, dict):
                     data[key] = value.copy()
+                if isinstance(value, list):
+                    data[key] = [val for val in value]
             return data
+
         return inner
 
     mock_ok_resp.json.side_effect = download_data_copy(
@@ -667,9 +667,12 @@ def test_url_failure_download(
         def inner():
             data = input_data.copy()
             for key, value in data.items():
-                if isinstance(value, (dict, list)):
+                if isinstance(value, dict):
                     data[key] = value.copy()
+                if isinstance(value, list):
+                    data[key] = [val for val in value]
             return data
+
         return inner
 
     mock_ok_resp.json.side_effect = download_data_copy(

@@ -187,7 +187,6 @@ class Session(properties.HasProperties):
             parallel=PARALLEL,
             workers=100,
             _executor=None,
-            _cleanup=True,
     ):
         """Upload new resource to your Project or update existing resource
 
@@ -218,47 +217,84 @@ class Session(properties.HasProperties):
             )
         if isinstance(resource, scene.Slide):
             raise ValueError('Use upload_slide method for Slides')
-        if verbose:
-            utils.log('Starting upload of {}'.format(resource), False)
-        if isinstance(resource, spatial.DataBasic):
-            resource = utils.sanitize_data_colormaps(resource)
-        if isinstance(resource, manifests.View) and update_contents:
-            resource.contents = utils.compute_children(resource)
-        resource.validate()
+        if isinstance(resource, scene.Feedback):
+            raise ValueError('Use upload_feedback method for Feedback')
         if parallel and not _executor:
             if verbose:
                 utils.log('Initializing thread pool', False)
             _executor = ThreadPoolExecutor(max_workers=workers)
-            shutdown_executor = True
-        else:
-            shutdown_executor = False
-        try:
-            json_dict = self._construct_upload_dict(
-                resource=resource,
-                executor=_executor,
-                verbose=verbose,
-                update_contents=update_contents,
-                chunk_size=chunk_size,
-                parallel=parallel,
-                _cleanup=False
-            )
-            output_url = self._upload(
-                resource=resource,
-                verbose=verbose,
-                chunk_size=chunk_size,
-                json_dict=json_dict,
-                post_url=PROJECT_UPLOAD_URL,
-                thumbnail=thumbnail,
-            )
-            if verbose:
-                utils.log('Finished upload of {}'.format(resource), _cleanup)
-            return output_url
-        finally:
-            if _cleanup:
-                utils.recursive_setattr(resource, True, '_upload_output', None)
-            if shutdown_executor:
-                _executor.shutdown(wait=True)
-
+        resources_to_upload = utils.compute_children(resource)
+        resources_to_upload.append(resource)
+        resources_to_upload = [
+            res for res in resources_to_upload if not utils.is_uploaded(res)
+        ]
+        file_resp_futures = []
+        if thumbnail:
+            resource._thumbnail = thumbnail
+        while True:
+            uploads_complete = True
+            for res in resources_to_upload:
+                if utils.is_uploaded(res):
+                    continue
+                future_url = getattr(res, '_future_url', None)
+                if future_url and future_url.done():
+                    utils.process_uploaded_resource(res, future_url.result())
+                    if verbose:
+                        utils.log('Finished upload of {}'.format(res), False)
+                    continue
+                uploads_complete = False
+                if future_url:
+                    continue
+                for name, prop in sorted(res._props.items()):
+                    value = getattr(res, name)
+                    if name in IGNORED_PROPS or value is None:
+                        continue
+                    if utils.is_pointer(prop) and not utils.is_uploaded(value):
+                        break
+                    if (utils.is_list_of_pointers(prop)
+                            and any(not utils.is_uploaded(val)
+                                    for val in value)):
+                        break
+                else:
+                    if isinstance(res, spatial.DataBasic):
+                        utils.sanitize_data_colormaps(res)
+                    if isinstance(res, manifests.View) and update_contents:
+                        res.contents = utils.compute_children(res)
+                    res.validate()
+                    json_dict = utils.construct_upload_dict(res)
+                    kwargs = {
+                        'resource': res,
+                        'verbose': verbose,
+                        'chunk_size': chunk_size,
+                        'json_dict': json_dict,
+                        'post_url': PROJECT_UPLOAD_URL,
+                        'file_resp_futures': file_resp_futures,
+                    }
+                    if _executor:
+                        res._future_url = _executor.submit(
+                            self._upload, executor=_executor, **kwargs
+                        )
+                    else:
+                        url = self._upload(**kwargs)
+                        utils.process_uploaded_resource(res, url)
+                        if verbose:
+                            utils.log(
+                                'Finished upload of {}'.format(res), False
+                            )
+            # This raises an error if an async file upload failed
+            for value in [_ for _ in file_resp_futures]:
+                if not value.done():
+                    uploads_complete = False
+                    continue
+                resp = value.result()
+                if not resp.ok:
+                    raise ValueError(resp.text)
+                file_resp_futures.remove(value)
+            if uploads_complete:
+                break
+        if _executor:
+            _executor.shutdown(wait=True)
+        return resource._url
 
     def upload_slide(
             self,
@@ -308,6 +344,8 @@ class Session(properties.HasProperties):
                 slide.scene.camera
             )
         slide.validate()
+        if thumbnail:
+            slide._thumbnail = thumbnail
         view = self.download(
             url=view_url or slide._url.split('/slides/')[0],
             recursive=False,
@@ -323,7 +361,6 @@ class Session(properties.HasProperties):
             chunk_size=chunk_size,
             json_dict=json_dict,
             post_url=post_url,
-            thumbnail=thumbnail,
         )
         if verbose:
             utils.log('Finished upload of {}'.format(slide))
@@ -369,70 +406,28 @@ class Session(properties.HasProperties):
             chunk_size=None,
             json_dict=json_dict,
             post_url=post_url,
-            thumbnail=None,
         )
         if verbose:
             utils.log('Finished upload of {}'.format(feedback))
         return output_url
 
-    def _construct_upload_dict(self, resource, executor=None, **upload_kwargs):
-        """Method to construct upload body from resource with pointers"""
-        json_dict = {}
-        for name, prop in resource._props.items():
-            value = getattr(resource, name)
-            if name in IGNORED_PROPS or value is None:
-                continue
-            if utils.is_pointer(prop):
-                json_value = self._pointer_upload(
-                    value, executor, **upload_kwargs
-                )
-            elif utils.is_list_of_pointers(prop):
-                json_value = []
-                for val in value:
-                    json_value.append(
-                        self._pointer_upload(val, executor, **upload_kwargs)
-                    )
-            else:
-                json_value = prop.serialize(value, include_class=False)
-            json_dict.update({name: json_value})
-        return json_dict
-
-    def _pointer_upload(self, value, executor, **upload_kwargs):
-        """Method to decide how to upload pointer value"""
-        if isinstance(value, string_types):
-            return value
-        elif getattr(value, '_upload_output', None) is not None:
-            pass
-        elif not executor:
-            value._upload_output = self.upload(
-                resource=value,
-                **upload_kwargs
-            )
-        else:
-            value._upload_output = executor.submit(
-                self.upload,
-                resource=value,
-                _executor=executor,
-                **upload_kwargs
-            )
-        return value._upload_output
-
     def _upload(
-            self, resource, verbose, chunk_size, json_dict, post_url, thumbnail
+            self,
+            resource,
+            verbose,
+            chunk_size,
+            json_dict,
+            post_url,
+            file_resp_futures,
+            executor=None,
     ):
         """Core upload functionality, used by other upload_* methods
 
         Use :code:`upload`, :code:`upload_slide`, or :code:`upload_feedback`
         instead.
         """
-        for key, value in json_dict.items():
-            if isinstance(value, Future):
-                json_dict[key] = value.result()
-            elif isinstance(value, list):
-                json_dict[key] = [
-                    val.result() if isinstance(val, Future) else val
-                    for val in value
-                ]
+        if verbose:
+            utils.log('Starting upload of {}'.format(resource), False)
         if not getattr(resource, '_url', None):
             resp = self.session.post(
                 post_url.format(
@@ -456,31 +451,32 @@ class Session(properties.HasProperties):
             return resource._url
         if not resp.ok:
             raise ValueError(resp.text)
-        utils.process_uploaded_resource(resource, resp.json()['links']['self'])
         if isinstance(resource, files.base._BaseFile):
             url = resp.json()['links']['location']
+            file_resp = None
             if isinstance(resource,
                           files.Array) and resource.array is not None:
                 if verbose:
                     utils.log('   Array upload of {}'.format(resource), False)
-                file_resp = utils.upload_array(
-                    resource.array, url, chunk_size, self.session,
-                )
+                args = resource.array, url, chunk_size, self.session
+                if executor:
+                    file_resp = executor.submit(utils.upload_array, *args)
+                else:
+                    file_resp = utils.upload_array(*args)
             elif isinstance(resource,
                             files.Image) and resource.image is not None:
                 if verbose:
                     utils.log('   Image upload of {}'.format(resource), False)
-                file_resp = utils.upload_image(
-                    resource.image, url, chunk_size, self.session,
-                )
-            else:
-                raise ValueError(
-                    'Unknown file resource: {}'.format(
-                        resource.__class__.__name__
-                    )
-                )
-            if not file_resp.ok:
+                args = resource.image, url, chunk_size, self.session
+                if executor:
+                    file_resp = executor.submit(utils.upload_image, *args)
+                else:
+                    file_resp = utils.upload_image(*args)
+            if isinstance(file_resp, Future):
+                file_resp_futures.append(file_resp)
+            elif not file_resp.ok:
                 raise ValueError(file_resp.text)
+        thumbnail = getattr(resource, '_thumbnail', None)
         if thumbnail and 'thumbnail' in resp.json()['links']:
             thumb_file = files.Thumbnail(thumbnail)
             if verbose:
@@ -490,13 +486,17 @@ class Session(properties.HasProperties):
                 json=thumb_file.serialize(include_class=False),
             )
             if thumb_resp.ok:
-                utils.upload_image(
+                args = (
                     thumb_file.image,
                     thumb_resp.json()['links']['location'],
                     chunk_size,
                     self.session,
                 )
-        return resource._url
+                if executor:
+                    executor.submit(utils.upload_image, *args)
+                else:
+                    utils.upload_image(*args)
+        return resp.json()['links']['self']
 
     def download(
             self,
