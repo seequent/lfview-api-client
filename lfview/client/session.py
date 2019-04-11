@@ -405,8 +405,8 @@ class Session(properties.HasProperties):
             chunk_size,
             json_dict,
             post_url,
-            file_resp_futures,
-            executor,
+            file_resp_futures=None,
+            executor=None,
     ):
         """Core upload functionality, used by other upload_* methods
 
@@ -443,6 +443,8 @@ class Session(properties.HasProperties):
             'chunk_size': chunk_size,
             'session': self.session,
         }
+        if not executor:
+            executor = utils.SynchronousExecutor()
         if isinstance(resource, files.Array) and resource.array is not None:
             if verbose:
                 utils.log('   Array upload of {}'.format(resource), False)
@@ -461,7 +463,7 @@ class Session(properties.HasProperties):
                 url=resp.json()['links']['location'],
                 **file_kwargs
             )
-        if file_resp:
+        if file_resp and file_resp_futures is not None:
             file_resp_futures.append(file_resp)
         thumbnail = getattr(resource, '_thumbnail', None)
         if thumbnail and 'thumbnail' in resp.json()['links']:
