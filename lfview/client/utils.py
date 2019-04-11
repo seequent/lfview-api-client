@@ -168,16 +168,12 @@ def touch(resource, recursive=False):
     touched. You may also specify :code:`recursive=True` to touch all
     child resources.
     """
-    return recursive_setattr(resource, recursive, '_touched', True)
-
-
-def recursive_setattr(resource, recursive, attr, value):
-    setattr(resource, attr, value)
+    resource._touched = True
     if recursive:
         for item in compute_children(resource):
             if isinstance(item, string_types):
                 continue
-            setattr(item, attr, value)
+            item._touched = True
 
 
 def process_uploaded_resource(resource, url):
@@ -197,6 +193,7 @@ def process_uploaded_resource(resource, url):
 
 
 def is_uploaded(resource):
+    """Determine if resource is up-to-date with the server"""
     if isinstance(resource, string_types):
         return True
     if not getattr(resource, '_url', None):
