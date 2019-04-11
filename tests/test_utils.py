@@ -149,7 +149,7 @@ def test_is_list_of_pointers():
     ]
 )
 def test_find_class_good(base_type, sub_type, value):
-    assert utils.find_class(base_type, sub_type) is value
+    assert utils.find_class_from_types(base_type, sub_type) is value
 
 
 @pytest.mark.parametrize(
@@ -164,7 +164,7 @@ def test_find_class_good(base_type, sub_type, value):
 )
 def test_find_class_bad(base_type, sub_type):
     with pytest.raises(ValueError):
-        utils.find_class(base_type, sub_type)
+        utils.find_class_from_types(base_type, sub_type)
 
 
 class MockResource(files.base._BaseUIDModel):

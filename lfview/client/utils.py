@@ -91,6 +91,7 @@ def is_list_of_pointers(prop):
 
 
 def find_class_from_resp(url, resp_type=None):
+    """Return class that matches input URL and 'type' from JSON response"""
     if resp_type:
         if '/' in resp_type:
             return find_class_from_types(*resp_type.split('/'))
@@ -112,6 +113,28 @@ def find_class_from_types(base_type, sub_type):
             base_type, '/{}'.format(sub_type) if sub_type else ''
         )
     )
+
+
+def types_from_url(url):
+    """Extract API resource base-type and sub-type from URL
+
+    Valid inputs include project service, view service and app URLs.
+    """
+    if match_url_slide(url):
+        return 'slides', None
+    if match_url_feedback(url):
+        return 'feedback', None
+    if match_url_app(url) or match_url_project(url) or match_url_view(url):
+        return 'views', None
+    resource_re = (
+        r'^.+/api/v1/(view/[a-z0-9]+|project)/[a-z0-9]+/[a-z0-9]+'
+        r'/(?P<basetype>[a-z]+)/(?P<subtype>[a-z]+)/[a-z0-9]+$'
+    )
+    match = re.search(resource_re, url)
+    if match:
+        groupdict = match.groupdict()
+        return groupdict['basetype'], groupdict['subtype']
+    raise ValueError('Unknown resource type from {}'.format(url))
 
 
 def compute_children(resource):
@@ -161,6 +184,7 @@ def process_uploaded_resource(resource, url):
     """Save url as attribute on resource and setup change observer"""
     if not getattr(resource, '_url', None):
         resource._url = url
+    resource._future_url = None
     if not getattr(resource, '_change_observer', None):
         resource._change_observer = properties.observer(
             resource,
@@ -370,28 +394,6 @@ def convert_url_project_to_view(url):
     return view_url_string.format(**match.groupdict())
 
 
-def types_from_url(url):
-    """Extract API resource base-type and sub-type from URL
-
-    Valid inputs include project service, view service and app URLs.
-    """
-    if match_url_slide(url):
-        return 'slides', None
-    if match_url_feedback(url):
-        return 'feedback', None
-    if match_url_app(url) or match_url_project(url) or match_url_view(url):
-        return 'views', None
-    resource_re = (
-        r'^.+/api/v1/(view/[a-z0-9]+|project)/[a-z0-9]+/[a-z0-9]+'
-        r'/(?P<basetype>[a-z]+)/(?P<subtype>[a-z]+)/[a-z0-9]+$'
-    )
-    match = re.search(resource_re, url)
-    if match:
-        groupdict = match.groupdict()
-        return groupdict['basetype'], groupdict['subtype']
-    raise ValueError('Unknown resource type from {}'.format(url))
-
-
 def drawing_plane_from_camera(camera):
     """Estimate a drawing plane perpendicular to camera
 
@@ -516,8 +518,49 @@ def sanitize_data_colormaps(data):
 
 
 def log(message, final=True, total_length=70):
+    """Simple print logger that facilitates repeated messages on one line"""
     end_buffer = max(20, total_length - len(message))
     print(
         '\r{}'.format(message),
         end=end_buffer * ' ' + ('\n' if final else '\r'),
     )
+
+
+class SynchronousExecutor:
+    """Synchronous executor with similar API to ThreadPoolExecutor
+
+    This class implements :code:`submit` and :code:`shutdown`.
+
+    Note: Exceptions that occur during execution will be raised on
+    :code:`submit`; this differs from ThreadPoolExecutor where
+    exceptions are not raised until accessing the result.
+    """
+
+    @staticmethod
+    def submit(func, *args, **kwargs):
+        """Execute input function and store result in synchronous future"""
+        return SynchronousFuture(func(*args, **kwargs))
+
+    @staticmethod
+    def shutdown(wait=True):
+        """Shutting down a SynchronousExecutor does nothing"""
+        pass
+
+
+class SynchronousFuture:
+    """Result of submitting a function to SynchronousExecutor
+
+    Follows a similar API to concurrent.futures.Future. By the
+    synchronous definition, these futures are "done" on creation.
+    """
+
+    def __init__(self, result):
+        self._result = result
+
+    def done(self):
+        """Returns True since result is defined on instantiation"""
+        return True
+
+    def result(self):
+        """Returns the result provided on instantiation"""
+        return self._result

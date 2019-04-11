@@ -779,9 +779,9 @@ def test_recursive_download(
             mock.call(
                 'https://example.com/api/v1/project/org/proj/textures/projection/uid',
             ),
-            mock.call('https://example.com/some_file'),
-            mock.call('https://example.com/some_file'),
             mock.call('https://example.com/unknown_service/files/array/uid'),
+            mock.call('https://example.com/some_file'),
+            mock.call('https://example.com/some_file'),
         ],
         any_order=parallel,
     )

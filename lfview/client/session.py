@@ -219,10 +219,14 @@ class Session(properties.HasProperties):
             raise ValueError('Use upload_slide method for Slides')
         if isinstance(resource, scene.Feedback):
             raise ValueError('Use upload_feedback method for Feedback')
-        if parallel and not _executor:
+        if _executor:
+            pass
+        elif parallel:
             if verbose:
                 utils.log('Initializing thread pool', False)
             _executor = ThreadPoolExecutor(max_workers=workers)
+        else:
+            _executor = utils.SynchronousExecutor()
         resources_to_upload = utils.compute_children(resource)
         resources_to_upload.append(resource)
         resources_to_upload = [
@@ -245,42 +249,25 @@ class Session(properties.HasProperties):
                 uploads_complete = False
                 if future_url:
                     continue
-                for name, prop in sorted(res._props.items()):
-                    value = getattr(res, name)
-                    if name in IGNORED_PROPS or value is None:
-                        continue
-                    if utils.is_pointer(prop) and not utils.is_uploaded(value):
-                        break
-                    if (utils.is_list_of_pointers(prop)
-                            and any(not utils.is_uploaded(val)
-                                    for val in value)):
-                        break
-                else:
-                    if isinstance(res, spatial.DataBasic):
-                        utils.sanitize_data_colormaps(res)
-                    if isinstance(res, manifests.View) and update_contents:
-                        res.contents = utils.compute_children(res)
-                    res.validate()
-                    json_dict = utils.construct_upload_dict(res)
-                    kwargs = {
-                        'resource': res,
-                        'verbose': verbose,
-                        'chunk_size': chunk_size,
-                        'json_dict': json_dict,
-                        'post_url': PROJECT_UPLOAD_URL,
-                        'file_resp_futures': file_resp_futures,
-                    }
-                    if _executor:
-                        res._future_url = _executor.submit(
-                            self._upload, executor=_executor, **kwargs
-                        )
-                    else:
-                        url = self._upload(**kwargs)
-                        utils.process_uploaded_resource(res, url)
-                        if verbose:
-                            utils.log(
-                                'Finished upload of {}'.format(res), False
-                            )
+                children = utils.compute_children(res)
+                if any(not utils.is_uploaded(child) for child in children):
+                    continue
+                if isinstance(res, spatial.DataBasic):
+                    utils.sanitize_data_colormaps(res)
+                if isinstance(res, manifests.View) and update_contents:
+                    res.contents = utils.compute_children(res)
+                res.validate()
+                json_dict = utils.construct_upload_dict(res)
+                res._future_url = _executor.submit(
+                    self._upload,
+                    resource=res,
+                    verbose=verbose,
+                    chunk_size=chunk_size,
+                    json_dict=json_dict,
+                    post_url=PROJECT_UPLOAD_URL,
+                    file_resp_futures=file_resp_futures,
+                    executor=_executor,
+                )
             # This raises an error if an async file upload failed
             for value in [_ for _ in file_resp_futures]:
                 if not value.done():
@@ -292,8 +279,7 @@ class Session(properties.HasProperties):
                 file_resp_futures.remove(value)
             if uploads_complete:
                 break
-        if _executor:
-            _executor.shutdown(wait=True)
+        _executor.shutdown(wait=True)
         return resource._url
 
     def upload_slide(
@@ -419,7 +405,7 @@ class Session(properties.HasProperties):
             json_dict,
             post_url,
             file_resp_futures,
-            executor=None,
+            executor,
     ):
         """Core upload functionality, used by other upload_* methods
 
@@ -451,51 +437,47 @@ class Session(properties.HasProperties):
             return resource._url
         if not resp.ok:
             raise ValueError(resp.text)
-        if isinstance(resource, files.base._BaseFile):
-            url = resp.json()['links']['location']
-            file_resp = None
-            if isinstance(resource,
-                          files.Array) and resource.array is not None:
-                if verbose:
-                    utils.log('   Array upload of {}'.format(resource), False)
-                args = resource.array, url, chunk_size, self.session
-                if executor:
-                    file_resp = executor.submit(utils.upload_array, *args)
-                else:
-                    file_resp = utils.upload_array(*args)
-            elif isinstance(resource,
-                            files.Image) and resource.image is not None:
-                if verbose:
-                    utils.log('   Image upload of {}'.format(resource), False)
-                args = resource.image, url, chunk_size, self.session
-                if executor:
-                    file_resp = executor.submit(utils.upload_image, *args)
-                else:
-                    file_resp = utils.upload_image(*args)
-            if isinstance(file_resp, Future):
-                file_resp_futures.append(file_resp)
-            elif not file_resp.ok:
-                raise ValueError(file_resp.text)
+        file_resp = None
+        file_kwargs = {
+            'chunk_size': chunk_size,
+            'session': self.session,
+        }
+        if isinstance(resource, files.Array) and resource.array is not None:
+            if verbose:
+                utils.log('   Array upload of {}'.format(resource), False)
+            file_resp = executor.submit(
+                utils.upload_array,
+                arr=resource.array,
+                url=resp.json()['links']['location'],
+                **file_kwargs
+            )
+        elif isinstance(resource, files.Image) and resource.image is not None:
+            if verbose:
+                utils.log('   Image upload of {}'.format(resource), False)
+            file_resp = executor.submit(
+                utils.upload_image,
+                img=resource.image,
+                url=resp.json()['links']['location'],
+                **file_kwargs
+            )
+        if file_resp:
+            file_resp_futures.append(file_resp)
         thumbnail = getattr(resource, '_thumbnail', None)
         if thumbnail and 'thumbnail' in resp.json()['links']:
-            thumb_file = files.Thumbnail(thumbnail)
+            thumbnail_file = files.Thumbnail(thumbnail)
             if verbose:
                 utils.log('   Thumb upload of {}'.format(resource), False)
-            thumb_resp = self.session.put(
+            thumbnail_resp = self.session.put(
                 resp.json()['links']['thumbnail'],
-                json=thumb_file.serialize(include_class=False),
+                json=thumbnail_file.serialize(include_class=False),
             )
-            if thumb_resp.ok:
-                args = (
-                    thumb_file.image,
-                    thumb_resp.json()['links']['location'],
-                    chunk_size,
-                    self.session,
+            if thumbnail_resp.ok:
+                executor.submit(
+                    utils.upload_image,
+                    img=thumbnail_file.image,
+                    url=thumbnail_resp.json()['links']['location'],
+                    **file_kwargs
                 )
-                if executor:
-                    executor.submit(utils.upload_image, *args)
-                else:
-                    utils.upload_image(*args)
         return resp.json()['links']['self']
 
     def download(
@@ -536,70 +518,64 @@ class Session(properties.HasProperties):
         """
         if verbose:
             utils.log('Starting download', False)
-        if recursive and parallel and not _executor:
+        if _executor:
+            pass
+        elif recursive and parallel:
             if verbose:
                 utils.log('Initializing thread pool', False)
             _executor = ThreadPoolExecutor(max_workers=workers)
+        else:
+            _executor = utils.SynchronousExecutor()
         lookup_dict = {url: None}
         while True:
             downloads_complete = True
             for key, value in sorted(lookup_dict.copy().items()):
                 if value is None:
                     downloads_complete = False
-                    kwargs = {
-                        'url': key,
-                        'recursive': recursive,
-                        'verbose': verbose,
-                        'allow_failure': allow_failure,
-                        'executor': _executor,
-                        'lookup_dict': lookup_dict,
-                    }
-                    if _executor:
-                        lookup_dict[key] = _executor.submit(
-                            self._download_resource_json, **kwargs
-                        )
-                    else:
-                        lookup_dict[key] = self._download_resource_json(
-                            **kwargs
-                        )
-                elif isinstance(value, Future):
+                    lookup_dict[key] = _executor.submit(
+                        self._download_resource_json,
+                        url=key,
+                        recursive=recursive,
+                        verbose=verbose,
+                        allow_failure=allow_failure,
+                        lookup_dict=lookup_dict,
+                    )
+                    continue
+                if isinstance(value, (Future, utils.SynchronousFuture)):
                     downloads_complete = False
                     if value.done():
                         lookup_dict[key] = value.result()
-                elif isinstance(value, dict):
-                    location = value.get('links', {}).get('location')
-                    if not location:
-                        continue
-                    if isinstance(location, string_types):
+                    continue
+                if isinstance(value, string_types):
+                    continue
+                location = value.get('links', {}).get('location')
+                if not location:
+                    continue
+                if isinstance(location, string_types):
+                    downloads_complete = False
+                    value['links']['location'] = _executor.submit(
+                        self.session.get,
+                        location,
+                    )
+                    continue
+                if isinstance(location, (Future, utils.SynchronousFuture)):
+                    if not location.done():
                         downloads_complete = False
-                        if _executor:
-                            value['links']['location'] = _executor.submit(
-                                self.session.get,
-                                location,
-                            )
-                        else:
-                            value['links']['location'] = self.session.get(
-                                location,
-                            )
-                    elif isinstance(location, Future):
-                        if location.done():
-                            if verbose:
-                                file_type = value.get('type', '/file')
-                                utils.log(
-                                    'Downloaded binary data for {} {}'.format(
-                                        file_type.split('/')[1].title(),
-                                        value.get('uid', ''),
-                                    ),
-                                    False,
-                                )
-                            value['links']['location'] = location.result()
-                        else:
-                            downloads_complete = False
+                        continue
+                    if verbose:
+                        file_type = value.get('type', '/file')
+                        utils.log(
+                            'Downloaded binary data for {} {}'.format(
+                                file_type.split('/')[1].title(),
+                                value.get('uid', ''),
+                            ),
+                            False,
+                        )
+                    value['links']['location'] = location.result()
             if downloads_complete:
                 break
 
-        if _executor:
-            _executor.shutdown(wait=True)
+        _executor.shutdown(wait=True)
 
         if verbose:
             utils.log('Constructing resources from data', False)
@@ -628,7 +604,6 @@ class Session(properties.HasProperties):
             recursive,
             verbose,
             allow_failure,
-            executor,
             lookup_dict,
     ):
         """Helper method to fetch resource JSON
@@ -656,7 +631,6 @@ class Session(properties.HasProperties):
                 return url
             raise ValueError('Unable to download {}'.format(url))
         resource_json = resp.json()
-        # Get resource type and instantiate the resource
         resource_class = utils.find_class_from_resp(
             url=url, resp_type=resource_json.get('type')
         )
@@ -675,16 +649,14 @@ class Session(properties.HasProperties):
         if recursive:
             for name, prop in sorted(resource_class._props.items()):
                 value = resource_json.get(name)
-                if not value:
+                if name in IGNORED_PROPS or not value:
                     continue
-                if (utils.is_pointer(prop) and isinstance(value, string_types)
-                        and value not in lookup_dict):
-                    lookup_dict.update({value: None})
+                if utils.is_pointer(prop) and isinstance(value, string_types):
+                    lookup_dict.setdefault(value)
                 elif utils.is_list_of_pointers(prop):
                     for val in value:
-                        if (isinstance(val, string_types)
-                                and val not in lookup_dict):
-                            lookup_dict.update({val: None})
+                        if isinstance(val, string_types):
+                            lookup_dict.setdefault(val)
         return resource_json
 
     def delete(self, resource):
