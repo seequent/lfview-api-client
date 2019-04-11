@@ -8,5 +8,5 @@ pytest
 pytest-cov
 sphinx
 sphinx_rtd_theme
-yapf
+yapf==0.26.0
 -r ./requirements.txt
