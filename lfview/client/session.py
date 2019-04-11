@@ -239,17 +239,21 @@ class Session(properties.HasProperties):
         while True:
             uploads_complete = True
             for res in resources_to_upload:
+                # Skip resources that have already been uploaded
                 if utils.is_uploaded(res):
                     continue
                 future_url = getattr(res, '_future_url', None)
+                # Finalize processing after uploads are complete
                 if future_url and future_url.done():
                     utils.process_uploaded_resource(res, future_url.result())
                     if verbose:
                         utils.log('Finished upload of {}'.format(res), False)
                     continue
+                # If we get to this point, there is still work to do
                 uploads_complete = False
                 if future_url:
                     continue
+                # Do not attempt to upload until all children are uploaded
                 children = utils.compute_children(res)
                 if any(not utils.is_uploaded(child) for child in children):
                     continue
