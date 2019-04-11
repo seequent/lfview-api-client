@@ -17,9 +17,10 @@ from .constants import (
     ORG_ENDPOINT,
     PROJECT_ENDPOINT,
     PROJECT_UID_ENDPOINT,
-    PROJECT_UPLOAD_URL,
+    PROJECT_UPLOAD_ENDPOINT,
     USER_ENDPOINT,
     VIEW_INVITES_ENDPOINT,
+    VIEW_SLIDES_ENDPOINT,
 )
 from . import utils
 
@@ -264,7 +265,7 @@ class Session(properties.HasProperties):
                     verbose=verbose,
                     chunk_size=chunk_size,
                     json_dict=json_dict,
-                    post_url=PROJECT_UPLOAD_URL,
+                    post_url=PROJECT_UPLOAD_ENDPOINT,
                     file_resp_futures=file_resp_futures,
                     executor=_executor,
                 )
@@ -320,7 +321,7 @@ class Session(properties.HasProperties):
                 view_url = utils.convert_url_project_to_view(view_url)
             if not utils.match_url_view(view_url):
                 raise ValueError('view_url is invalid: {}'.format(view_url))
-            post_url = view_url + '/slides'
+            post_url = VIEW_SLIDES_ENDPOINT.format(view_url=view_url)
         else:
             post_url = None
         if verbose:

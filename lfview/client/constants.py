@@ -27,9 +27,6 @@ PROJECT_ENDPOINT = ORG_UID_ENDPOINT + '/projects'
 PROJECT_UID_ENDPOINT = (
     '{}/project'.format(DEFAULT_API_LOCATION) + '/{org}/{project}'
 )
-PROJECT_UPLOAD_URL = PROJECT_UID_ENDPOINT + '/{base_type}{sub_type}'
-VIEW_UID_ENDPOINT = (
-    '{}/view'.format(DEFAULT_API_LOCATION) + '/{org}/{project}/{view}'
-)
+PROJECT_UPLOAD_ENDPOINT = PROJECT_UID_ENDPOINT + '/{base_type}{sub_type}'
 VIEW_INVITES_ENDPOINT = '{view_url}/invites'
 VIEW_SLIDES_ENDPOINT = '{view_url}/slides'
