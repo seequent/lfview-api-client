@@ -688,3 +688,5 @@ class Session(properties.HasProperties):
         resp = self.session.delete(url)
         if not resp.ok:
             raise ValueError('Failed to delete: {}'.format(url))
+        if getattr(resource, '_url', None):
+            resource.url = None
