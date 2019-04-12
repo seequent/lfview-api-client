@@ -246,8 +246,6 @@ class Session(properties.HasProperties):
                 # Finalize processing after uploads are complete
                 if future_url and future_url.done():
                     utils.process_uploaded_resource(res, future_url.result())
-                    if verbose:
-                        utils.log('Finished upload of {}'.format(res), False)
                     continue
                 # If we get to this point, there is still work to do
                 uploads_complete = False
@@ -328,8 +326,6 @@ class Session(properties.HasProperties):
             post_url = VIEW_SLIDES_URL_SPEC.format(view_url=view_url)
         else:
             post_url = None
-        if verbose:
-            utils.log('Starting upload of {}'.format(slide), False)
         if autofill_plane and slide.scene.camera and not slide.annotation_plane:
             slide.annotation_plane = utils.drawing_plane_from_camera(
                 slide.scene.camera
@@ -353,8 +349,6 @@ class Session(properties.HasProperties):
             json_dict=json_dict,
             post_url=post_url,
         )
-        if verbose:
-            utils.log('Finished upload of {}'.format(slide))
         return output_url
 
     def upload_feedback(self, feedback, slide_url=None, verbose=True):
@@ -385,8 +379,6 @@ class Session(properties.HasProperties):
             post_url = slide_url + '/feedback'
         else:
             post_url = None
-        if verbose:
-            utils.log('Starting upload of {}'.format(feedback), False)
         feedback.validate()
         json_dict = feedback.serialize(include_class=False)
         for name in IGNORED_PROPS:
@@ -398,8 +390,6 @@ class Session(properties.HasProperties):
             json_dict=json_dict,
             post_url=post_url,
         )
-        if verbose:
-            utils.log('Finished upload of {}'.format(feedback))
         return output_url
 
     def _upload(
@@ -485,6 +475,8 @@ class Session(properties.HasProperties):
                     url=thumbnail_resp.json()['links']['location'],
                     **file_kwargs
                 )
+        if verbose:
+            utils.log('Finished upload of {}'.format(res), False)
         return resp.json()['links']['self']
 
     def download(
