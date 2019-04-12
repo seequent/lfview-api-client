@@ -181,7 +181,7 @@ def touch(resource, recursive=False):
             item._touched = True
 
 
-def process_uploaded_resource(resource, url):
+def process_uploaded_resource(resource, url, verbose=False, final=True):
     """Save url as attribute on resource and setup change observer"""
     if not getattr(resource, '_url', None):
         resource._url = url
@@ -194,6 +194,8 @@ def process_uploaded_resource(resource, url):
             change_only=True,
         )
     resource._touched = False
+    if verbose:
+        log('Finished upload of {}'.format(resource), final)
     return resource
 
 
@@ -262,7 +264,7 @@ def build_resource_from_json(url, resource_json, copy):
                 )
             )
     if not copy:
-        process_uploaded_resource(resource, url)
+        process_uploaded_resource(resource, url, False)
     return resource
 
 
