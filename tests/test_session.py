@@ -2,6 +2,7 @@ import io
 import json
 import os
 import re
+import time
 try:
     from unittest import mock
 except ImportError:
@@ -10,6 +11,7 @@ except ImportError:
 import numpy as np
 import png
 import pytest
+import requests
 from six import string_types
 from lfview.client import Session
 from lfview.client.constants import CHUNK_SIZE
@@ -17,7 +19,7 @@ from lfview.resources import files, manifests, spatial, scene
 
 
 @pytest.fixture()
-@mock.patch('lfview.client.session.requests.get')
+@mock.patch('lfview.client.session.requests.Session.get')
 def session(mock_get):
     mock_resp = mock.MagicMock()
     mock_get.return_value = mock_resp
@@ -31,13 +33,18 @@ def test_session(session):
     assert session.project == 'default'
     assert session.headers == {
         'Authorization': 'bearer my_key',
-        'Source': 'Python API Client v0.0.1',
+        'Source': 'Python API Client v0.0.2',
     }
+    assert isinstance(session.session, requests.Session)
+    assert session.session.headers['Authorization'] == 'bearer my_key'
+    assert session.session.headers['Source'] == 'Python API Client v0.0.2'
     del session.source
     assert session.headers == {'Authorization': 'bearer my_key'}
+    assert session.session.headers['Authorization'] == 'bearer my_key'
+    assert 'source' not in session.session.headers
 
 
-@mock.patch('lfview.client.session.requests.post')
+@mock.patch('lfview.client.session.requests.Session.post')
 def test_create_org(mock_post, session):
     mock_resp = mock.MagicMock()
     mock_post.return_value = mock_resp
@@ -51,11 +58,10 @@ def test_create_org(mock_post, session):
             'name': 'My Org',
             'description': '',
         },
-        headers=session.headers,
     )
 
 
-@mock.patch('lfview.client.session.requests.post')
+@mock.patch('lfview.client.session.requests.Session.post')
 def test_create_project(mock_post, session):
     mock_resp = mock.MagicMock()
     mock_post.return_value = mock_resp
@@ -69,11 +75,10 @@ def test_create_project(mock_post, session):
             'name': '',
             'description': 'My Project',
         },
-        headers=session.headers,
     )
 
 
-@mock.patch('lfview.client.session.requests.post')
+@mock.patch('lfview.client.session.requests.Session.post')
 def test_invite(mock_post, session):
     mock_resp = mock.MagicMock()
     mock_post.return_value = mock_resp
@@ -101,7 +106,6 @@ def test_invite(mock_post, session):
             'roles': ['view.editor'],
             'send_email': False
         },
-        headers=session.headers,
     )
     session.invite_to_view(
         view_url=view_url,
@@ -118,20 +122,21 @@ def test_invite(mock_post, session):
             'send_email': True,
             'message': 'some message',
         },
-        headers=session.headers,
     )
 
 
+@pytest.mark.parametrize('parallel', [True, False])
+@pytest.mark.parametrize('workers', [None, 5, 1])
 @pytest.mark.parametrize('verbose', [True, False])
-@mock.patch('lfview.client.session.requests.post')
-@mock.patch('lfview.client.session.requests.patch')
-@mock.patch('lfview.client.session.requests.put')
+@mock.patch('lfview.client.session.requests.Session.post')
+@mock.patch('lfview.client.session.requests.Session.patch')
+@mock.patch('lfview.client.session.requests.Session.put')
 @mock.patch('lfview.client.session.utils.upload_array')
 @mock.patch('lfview.client.session.utils.upload_image')
 @mock.patch('lfview.resources.files.base._BaseUIDModel.pointer_regex')
 def test_upload(
         mock_regex, mock_upload_image, mock_upload_array, mock_put, mock_patch,
-        mock_post, verbose, session
+        mock_post, verbose, workers, parallel, session
 ):
     mock_resp = mock.MagicMock()
     mock_resp.json.return_value = {
@@ -219,7 +224,13 @@ def test_upload(
         w.write(f, s)
         f.close()
 
-        session.upload(view, verbose=verbose, thumbnail=png_file)
+        session.upload(
+            view,
+            verbose=verbose,
+            thumbnail=png_file,
+            parallel=parallel,
+            workers=workers,
+        )
     finally:
         os.remove(png_file)
 
@@ -238,7 +249,6 @@ def test_upload(
                     'content_type': 'application/octet-stream',
                     'content_length': 72,
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/files/array',
@@ -248,7 +258,6 @@ def test_upload(
                     'content_type': 'application/octet-stream',
                     'content_length': 24,
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/files/image',
@@ -256,7 +265,6 @@ def test_upload(
                     'content_type': 'image/png',
                     'content_length': img.seek(0, 2),
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/mappings/continuous',
@@ -267,7 +275,6 @@ def test_upload(
                     'visibility': [False, True, True, True, False],
                     'interpolate': False,
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/data/basic',
@@ -277,7 +284,6 @@ def test_upload(
                     'array': 'https://example.com/api/self',
                     'mappings': [],
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/data/basic',
@@ -291,7 +297,6 @@ def test_upload(
                         'https://example.com/api/mapping_uploaded',
                     ],
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/textures/projection',
@@ -301,7 +306,6 @@ def test_upload(
                     'axis_v': [0., 1, 0],
                     'image': 'https://example.com/api/self',
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/elements/pointset',
@@ -322,7 +326,6 @@ def test_upload(
                         }
                     },
                 },
-                headers=session.headers,
             ),
             mock.call(
                 'https://example.com/api/v1/project/mock_uid/default/views',
@@ -346,7 +349,6 @@ def test_upload(
                         'https://example.com/api/my_element',
                     ],
                 },
-                headers=session.headers,
             ),
         ],
         any_order=True
@@ -359,7 +361,6 @@ def test_upload(
             'end_inclusive': [True, True],
             'visibility': [True, True, True],
         },
-        headers=session.headers,
     )
     mock_put.assert_called_with(
         'https://example.com/api/self/thumbnail',
@@ -367,7 +368,6 @@ def test_upload(
             'content_type': 'image/png',
             'content_length': 88,
         },
-        headers=session.headers,
     )
 
 
@@ -383,10 +383,13 @@ def test_upload(
 @mock.patch('lfview.client.session.Session._upload')
 @mock.patch('lfview.client.session.Session.download')
 @mock.patch('lfview.client.session.utils.extra_slide_validation')
+@mock.patch('lfview.client.utils.SynchronousExecutor')
 def test_upload_slide(
-        mock_extra_validation, mock_download, mock_upload, view_url, verbose,
-        session
+        mock_executor_class, mock_extra_validation, mock_download, mock_upload,
+        view_url, verbose, session
 ):
+    mock_executor = mock.MagicMock()
+    mock_executor_class.return_value = mock_executor
     mock_extra_validation.return_value = True
     mock_view = mock.MagicMock(elements=[])
     mock_download.return_value = mock_view
@@ -429,7 +432,7 @@ def test_upload_slide(
         chunk_size=CHUNK_SIZE,
         json_dict=expected_json_dict,
         post_url=expected_post_url,
-        thumbnail=None,
+        executor=mock_executor,
     )
     mock_extra_validation.assert_called_once_with(slide, [])
 
@@ -487,7 +490,12 @@ def test_bad_upload_slide(slide, view_url, verbose, session):
 )
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.Session._upload')
-def test_upload_feedback(mock_upload, feedback, slide_url, verbose, session):
+@mock.patch('lfview.client.utils.SynchronousExecutor')
+def test_upload_feedback(
+        mock_executor_class, mock_upload, feedback, slide_url, verbose, session
+):
+    mock_executor = mock.MagicMock()
+    mock_executor_class.return_value = mock_executor
     if isinstance(feedback, scene.Feedback) and not slide_url:
         feedback._url = (
             'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1/feedback/fb1'
@@ -507,7 +515,7 @@ def test_upload_feedback(mock_upload, feedback, slide_url, verbose, session):
             chunk_size=None,
             json_dict=expected_json_dict,
             post_url=expected_post_url,
-            thumbnail=None,
+            executor=mock_executor,
         )
     else:
         mock_upload.assert_called_once()
@@ -534,10 +542,8 @@ def test_bad_upload_feedback(feedback, slide_url, verbose, session):
         session.upload_feedback(feedback, slide_url=slide_url, verbose=verbose)
 
 
-@pytest.mark.parametrize('copy', [True, False])
-@pytest.mark.parametrize('verbose', [True, False])
-@mock.patch('lfview.client.session.requests.get')
-def test_download(mock_get, copy, verbose, session):
+@pytest.fixture
+def download_data():
     generic_contents_list = [
         'https://example.com/api/v1/view/org/proj/viewuid/{}/uid'.
         format(resource_type) for resource_type in [
@@ -548,7 +554,7 @@ def test_download(mock_get, copy, verbose, session):
             'mappings/continuous',
         ]
     ]
-    generic_download_json = {
+    generic_json = {
         'contents': generic_contents_list,
         'vertices': 'https://example.com/api/v1/view/org/proj/viewuid/files/array/uid',
         'data': [
@@ -570,83 +576,224 @@ def test_download(mock_get, copy, verbose, session):
         'axis_u': [1., 0, 0],
         'axis_v': [0., 1, 0],
         'image': 'https://example.com/api/v1/view/org/proj/viewuid/files/image/uid',
+    }
+    file_json = {
         'shape': [3, 3],
         'dtype': 'Float64Array',
         'content_length': 72,
         'links': {
             'location': 'https://example.com/some_file'
-        }
+        },
     }
-    mock_ok_resp = mock.MagicMock(
+    view_url = 'https://example.com/api/v1/view/org/proj/viewuid'
+    data = {
+        'generic_contents_list': generic_contents_list,
+        'generic_json': generic_json,
+        'file_json': file_json,
+        'view_url': view_url,
+    }
+    return data
+
+
+@pytest.mark.parametrize('parallel', [False, True])
+@pytest.mark.parametrize('workers', [None, 5, 1])
+@pytest.mark.parametrize('copy', [True, False])
+@pytest.mark.parametrize('verbose', [True, False])
+@mock.patch('lfview.client.session.requests.Session.get')
+def test_non_recursive_download(
+        mock_get, parallel, workers, copy, verbose, session, download_data
+):
+    mock_ok_resp = mock.MagicMock(ok=True)
+
+    mock_file_resp = mock.MagicMock(
         ok=True,
         content=np.array([[0., 0, 0], [1, 1, 1], [2, 2, 2]]).tobytes(),
     )
-    mock_ok_resp.json.return_value = generic_download_json
+
+    def download_data_copy(input_data):
+        def inner():
+            data = input_data.copy()
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    data[key] = value.copy()
+                if isinstance(value, list):
+                    data[key] = [val for val in value]
+            return data
+
+        return inner
+
+    mock_ok_resp.json.side_effect = download_data_copy(
+        download_data['generic_json']
+    )
+    mock_file_resp.json.side_effect = download_data_copy(
+        download_data['file_json']
+    )
     mock_bad_resp = mock.MagicMock(ok=False)
 
     def pick_response(url, **kwargs):
         if 'unknown_service' in url:
             return mock_bad_resp
+        if '/files/' in url:
+            return mock_file_resp
         return mock_ok_resp
 
     mock_get.side_effect = pick_response
 
-    view_url = 'https://example.com/api/v1/view/org/proj/viewuid'
-    kwargs = {'copy': copy, 'verbose': verbose}
+    kwargs = {
+        'copy': copy,
+        'verbose': verbose,
+        'parallel': parallel,
+        'workers': workers,
+    }
 
-    resource = session.download(view_url, recursive=False, **kwargs)
-    mock_get.assert_called_once_with(view_url, headers=session.headers)
+    resource = session.download(
+        download_data['view_url'], recursive=False, **kwargs
+    )
+    mock_get.assert_called_once_with(download_data['view_url'])
     assert isinstance(resource, manifests.View)
     assert resource.name == 'Some Resource'
     assert resource.elements == [
         'https://example.com/api/v1/view/org/proj/viewuid/elements/pointset/uid',
     ]
-    assert resource.contents == generic_contents_list
+    assert resource.contents == download_data['generic_contents_list']
+
+
+@pytest.mark.parametrize('parallel', [False, True])
+@pytest.mark.parametrize('workers', [None, 5, 1])
+@pytest.mark.parametrize('copy', [True, False])
+@pytest.mark.parametrize('verbose', [True, False])
+@mock.patch('lfview.client.session.requests.Session.get')
+def test_url_failure_download(
+        mock_get, parallel, workers, copy, verbose, session, download_data
+):
+    mock_ok_resp = mock.MagicMock(ok=True)
+
+    mock_file_resp = mock.MagicMock(
+        ok=True,
+        content=np.array([[0., 0, 0], [1, 1, 1], [2, 2, 2]]).tobytes(),
+    )
+
+    def download_data_copy(input_data):
+        def inner():
+            data = input_data.copy()
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    data[key] = value.copy()
+                if isinstance(value, list):
+                    data[key] = [val for val in value]
+            return data
+
+        return inner
+
+    mock_ok_resp.json.side_effect = download_data_copy(
+        download_data['generic_json']
+    )
+    mock_file_resp.json.side_effect = download_data_copy(
+        download_data['file_json']
+    )
+    mock_bad_resp = mock.MagicMock(ok=False)
+
+    def pick_response(url, **kwargs):
+        if 'unknown_service' in url:
+            return mock_bad_resp
+        if '/files/' in url:
+            return mock_file_resp
+        return mock_ok_resp
+
+    mock_get.side_effect = pick_response
+
+    kwargs = {
+        'copy': copy,
+        'verbose': verbose,
+        'parallel': parallel,
+        'workers': workers,
+    }
 
     with pytest.raises(ValueError):
-        session.download(view_url, **kwargs)
+        session.download(download_data['view_url'], **kwargs)
 
-    previous_calls = mock_get.call_count
 
-    resource = session.download(view_url, allow_failure=True, **kwargs)
-    assert mock_get.call_count - previous_calls == 10
+@pytest.mark.parametrize('parallel', [False, True])
+@pytest.mark.parametrize('workers', [None, 5, 1])
+@pytest.mark.parametrize('copy', [True, False])
+@pytest.mark.parametrize('verbose', [True, False])
+@mock.patch('lfview.client.session.requests.Session.get')
+def test_recursive_download(
+        mock_get, parallel, workers, copy, verbose, session, download_data
+):
+    mock_ok_resp = mock.MagicMock(
+        ok=True,
+        content=np.array([[0., 0, 0], [1, 1, 1], [2, 2, 2]]).tobytes(),
+    )
+
+    mock_file_resp = mock.MagicMock(ok=True)
+
+    def download_data_copy(input_data):
+        def inner():
+            data = input_data.copy()
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    data[key] = value.copy()
+                if isinstance(value, list):
+                    data[key] = [val for val in value]
+            return data
+
+        return inner
+
+    mock_ok_resp.json.side_effect = download_data_copy(
+        download_data['generic_json']
+    )
+    mock_file_resp.json.side_effect = download_data_copy(
+        download_data['file_json']
+    )
+    mock_bad_resp = mock.MagicMock(ok=False)
+
+    def pick_response(url, **kwargs):
+        if 'unknown_service' in url:
+            return mock_bad_resp
+        if '/files/' in url:
+            return mock_file_resp
+        return mock_ok_resp
+
+    mock_get.side_effect = pick_response
+
+    kwargs = {
+        'copy': copy,
+        'verbose': verbose,
+        'parallel': parallel,
+        'workers': workers,
+    }
+
+    resource = session.download(
+        download_data['view_url'], allow_failure=True, **kwargs
+    )
+    assert mock_get.call_count == 10
     mock_get.assert_has_calls(
         [
+            mock.call('https://example.com/api/v1/view/org/proj/viewuid'),
             mock.call(
-                'https://example.com/api/v1/view/org/proj/viewuid',
-                headers=session.headers
+                'https://example.com/api/v1/view/org/proj/viewuid/data/basic/uid',
+            ),
+            mock.call(
+                'https://example.com/api/v1/view/org/proj/viewuid/elements/pointset/uid',
             ),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/files/array/uid',
-                headers=session.headers
             ),
-            mock.call('https://example.com/some_file'),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/files/image/uid',
-                headers=session.headers
-            ),
-            mock.call('https://example.com/some_file'),
-            mock.call(
-                'https://example.com/api/v1/view/org/proj/viewuid/elements/pointset/uid',
-                headers=session.headers
-            ),
-            mock.call(
-                'https://example.com/api/v1/view/org/proj/viewuid/data/basic/uid',
-                headers=session.headers
-            ),
-            mock.call(
-                'https://example.com/unknown_service/files/array/uid',
-                headers=session.headers
             ),
             mock.call(
                 'https://example.com/api/v1/view/org/proj/viewuid/mappings/continuous/uid',
-                headers=session.headers
             ),
             mock.call(
                 'https://example.com/api/v1/project/org/proj/textures/projection/uid',
-                headers=session.headers
             ),
-        ]
+            mock.call('https://example.com/unknown_service/files/array/uid'),
+            mock.call('https://example.com/some_file'),
+            mock.call('https://example.com/some_file'),
+        ],
+        any_order=parallel,
     )
     assert resource.validate()
     assert resource.elements[0] is resource.contents[2]
@@ -661,7 +808,7 @@ def test_download(mock_get, copy, verbose, session):
 
 
 @pytest.mark.parametrize('verbose', [True, False])
-@mock.patch('lfview.client.session.requests.get')
+@mock.patch('lfview.client.session.requests.Session.get')
 def test_app_url(mock_get, verbose, session):
     mock_resp = mock.MagicMock(ok=False)
     mock_get.return_value = mock_resp
@@ -674,14 +821,9 @@ def test_app_url(mock_get, verbose, session):
     mock_get.call_count == 2
     mock_get.assert_has_calls(
         [
-            mock.call(
-                'https://example.com/api/v1/project/org/proj/views/view',
-                headers=session.headers,
-            ),
-            mock.call(
-                'https://example.com/api/v1/view/org/proj/view',
-                headers=session.headers,
-            ),
+            mock.
+            call('https://example.com/api/v1/project/org/proj/views/view'),
+            mock.call('https://example.com/api/v1/view/org/proj/view'),
         ],
         any_order=True
     )
@@ -690,7 +832,7 @@ def test_app_url(mock_get, verbose, session):
 @pytest.mark.parametrize('url', ['https://example.com/api/something', None])
 @pytest.mark.parametrize('resp_ok', [True, False])
 @pytest.mark.parametrize('use_resource', [True, False])
-@mock.patch('lfview.client.session.requests.delete')
+@mock.patch('lfview.client.session.requests.Session.delete')
 def test_delete(mock_delete, url, resp_ok, use_resource, session):
     mock_resp = mock.MagicMock(ok=resp_ok)
     mock_delete.return_value = mock_resp
@@ -706,4 +848,4 @@ def test_delete(mock_delete, url, resp_ok, use_resource, session):
         session.delete(resource)
 
     if url:
-        mock_delete.assert_called_once_with(url, headers=session.headers)
+        mock_delete.assert_called_once_with(url)

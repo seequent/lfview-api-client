@@ -1,26 +1,31 @@
 """User session for logging in, uploading, downloading, etc"""
-from io import BytesIO
-
 from lfview.resources import files, manifests, scene, spatial
-import numpy as np
 import properties
 import requests
 from six import string_types
 
 from .constants import (
     CHUNK_SIZE,
-    DEFAULT_ENDPOINT,
+    DEFAUlT_URL_BASE,
     IGNORED_PROPS,
-    ORG_ENDPOINT,
-    PROJECT_ENDPOINT,
-    PROJECT_UID_ENDPOINT,
-    PROJECT_UPLOAD_URL,
-    USER_ENDPOINT,
-    VIEW_INVITES_ENDPOINT,
+    ORG_URL_SPEC,
+    PROJECT_URL_SPEC,
+    PROJECT_UID_URL_SPEC,
+    PROJECT_UPLOAD_URL_SPEC,
+    USER_URL_SPEC,
+    VIEW_INVITES_URL_SPEC,
+    VIEW_SLIDES_URL_SPEC,
 )
 from . import utils
 
-__version__ = '0.0.1'
+try:
+    from concurrent.futures import Future
+    PARALLEL = True
+except ImportError:
+    Future = utils.SynchronousFuture
+    PARALLEL = False
+
+__version__ = '0.0.2'
 
 
 class Session(properties.HasProperties):
@@ -39,15 +44,15 @@ class Session(properties.HasProperties):
         required=False,
     )
 
-    def __init__(self, api_key, endpoint=DEFAULT_ENDPOINT):
-        super(Session, self).__init__(
-            api_key=api_key,
-            endpoint=endpoint,
-        )
-        resp = requests.get(
-            url=USER_ENDPOINT.format(base=self.endpoint),
-            headers=self.headers,
-        )
+    def __init__(self, api_key, endpoint=DEFAUlT_URL_BASE, source=None):
+        kwargs = {
+            'api_key': api_key,
+            'endpoint': endpoint,
+        }
+        if source is not None:
+            kwargs.update({'source': source})
+        super(Session, self).__init__(**kwargs)
+        resp = self.session.get(url=USER_URL_SPEC.format(base=self.endpoint))
         if not resp.ok:
             raise ValueError('Invalid api key or endpoint')
         self.org = resp.json()['uid']
@@ -58,27 +63,43 @@ class Session(properties.HasProperties):
     def headers(self):
         """User session security headers for accessing the API"""
         if not self.api_key:
-            raise ValueError('User not logged in')
+            raise ValueError('User not logged in - please set api_key')
         headers = {'Authorization': 'bearer {}'.format(self.api_key)}
         if self.source:
             headers.update({'Source': self.source})
         return headers
 
+    @properties.Instance(
+        'Underlying requests session object',
+        instance_class=requests.Session,
+    )
+    def session(self):
+        if not getattr(self, '_session', None):
+            self._session = requests.Session()
+            self._session.headers.update(self.headers)
+        return self._session
+
     @properties.validator
     def _validate_org_proj(self):
         """Ensure the Session organization and project are valid"""
-        resp = requests.get(
-            url=PROJECT_UID_ENDPOINT.format(
+        resp = self.session.get(
+            url=PROJECT_UID_URL_SPEC.format(
                 base=self.endpoint,
                 org=self.org,
                 project=self.project,
             ),
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(
                 'Invalid org/project {}/{}'.format(self.org, self.project)
             )
+
+    @properties.observer(['api_key', 'source'])
+    def _update_requests_session(self, change):
+        if getattr(self, '_session', None):
+            if self.source is None:
+                self._session.headers.pop('source', None)
+            self._session.headers.update(self.headers)
 
     def _create_org(self, org, name=None, description=None):
         """Allows logged in user to create an organization
@@ -90,10 +111,9 @@ class Session(properties.HasProperties):
             'name': name or '',
             'description': description or '',
         }
-        resp = requests.post(
-            ORG_ENDPOINT.format(base=self.endpoint, ),
+        resp = self.session.post(
+            ORG_URL_SPEC.format(base=self.endpoint),
             json=json_dict,
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(resp.text)
@@ -112,13 +132,12 @@ class Session(properties.HasProperties):
             'name': name or '',
             'description': description or '',
         }
-        resp = requests.post(
-            PROJECT_ENDPOINT.format(
+        resp = self.session.post(
+            PROJECT_URL_SPEC.format(
                 base=self.endpoint,
                 org=self.org,
             ),
             json=json_dict,
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(resp.text)
@@ -152,42 +171,13 @@ class Session(properties.HasProperties):
         }
         if send_email:
             json_dict.update({'message': message})
-        resp = requests.post(
-            VIEW_INVITES_ENDPOINT.format(view_url=view_url),
+        resp = self.session.post(
+            VIEW_INVITES_URL_SPEC.format(view_url=view_url),
             json=json_dict,
-            headers=self.headers,
         )
         if not resp.ok:
             raise ValueError(resp.text)
         return resp
-
-    def _construct_upload_dict(self, resource, **upload_kwargs):
-        """Method to construct upload body from resource with pointers"""
-        json_dict = {}
-        for name, prop in resource._props.items():
-            value = getattr(resource, name)
-            if name in IGNORED_PROPS or value is None:
-                continue
-            elif utils.is_pointer(prop):
-                if isinstance(value, string_types):
-                    url = value
-                else:
-                    url = self.upload(value, **upload_kwargs)
-                json_dict.update({name: url})
-            elif utils.is_list_of_pointers(prop):
-                json_list = []
-                for val in value:
-                    if isinstance(val, string_types):
-                        url = val
-                    else:
-                        url = self.upload(val, **upload_kwargs)
-                    json_list.append(url)
-                json_dict.update({name: json_list})
-            else:
-                json_dict.update(
-                    {name: prop.serialize(value, include_class=False)}
-                )
-        return json_dict
 
     def upload(
             self,
@@ -196,6 +186,9 @@ class Session(properties.HasProperties):
             update_contents=True,
             thumbnail=None,
             chunk_size=CHUNK_SIZE,
+            parallel=PARALLEL,
+            workers=100,
+            executor=None,
     ):
         """Upload new resource to your Project or update existing resource
 
@@ -214,7 +207,17 @@ class Session(properties.HasProperties):
         * **thumbnail** - image to upload as thumbnail for the View; this
           may also be updated in the web app.
         * **chunk_size** - chunk size for file upload, must be a multiple
-          of 256 * 1024. By default, 1 * 256 * 1024 is used.
+          of 256 * 1024. By default, 20 MB (80 * 256 * 1024) is used.
+        * **parallel** - Perform concurrent uploads using Python threading.
+          By default, this is True if concurrent.futures is available.
+        * **workers** - Maximum number of thread workers to use; ignored
+          if parallel=False or alternative executor is provided.
+          Default is 100.
+        * **executor** - Alternative function executor for parallelization.
+          Must implement :code:`executor.submit(fn, *args, **kwargs)` and
+          :code:`executor.shutdown(wait)`. The :code:`submit` method
+          must return a "future" object that implements :code:`future.done()`
+          and :code:`future.result()`.
         """
         if not hasattr(resource, 'BASE_TYPE'):
             raise ValueError(
@@ -222,26 +225,72 @@ class Session(properties.HasProperties):
             )
         if isinstance(resource, scene.Slide):
             raise ValueError('Use upload_slide method for Slides')
-        if isinstance(resource, spatial.DataBasic):
-            resource = utils.sanitize_data_colormaps(resource)
-        if isinstance(resource, manifests.View) and update_contents:
-            resource.contents = utils.compute_children(resource)
-        resource.validate()
-        json_dict = self._construct_upload_dict(
-            resource,
-            verbose=verbose,
-            chunk_size=chunk_size,
-            update_contents=update_contents
-        )
-        output_url = self._upload(
-            resource=resource,
-            verbose=verbose,
-            chunk_size=chunk_size,
-            json_dict=json_dict,
-            post_url=PROJECT_UPLOAD_URL,
-            thumbnail=thumbnail,
-        )
-        return output_url
+        if isinstance(resource, scene.Feedback):
+            raise ValueError('Use upload_feedback method for Feedback')
+        if not executor:
+            executor = utils.get_default_executor(parallel, verbose, workers)
+        resources_to_upload = utils.compute_children(resource)
+        resources_to_upload.append(resource)
+        resources_to_upload = [
+            res for res in resources_to_upload if not utils.is_uploaded(res)
+        ]
+        file_resp_futures = []
+        if thumbnail:
+            resource._thumbnail = thumbnail
+        try:
+            while True:
+                uploads_complete = True
+                for res in resources_to_upload:
+                    # Skip resources that have already been uploaded
+                    if utils.is_uploaded(res):
+                        continue
+                    future_url = getattr(res, '_future_url', None)
+                    # Finalize processing after uploads are complete
+                    if future_url and future_url.done():
+                        utils.process_uploaded_resource(
+                            res, future_url.result()
+                        )
+                        continue
+                    # If we get to this point, there is still work to do
+                    uploads_complete = False
+                    if future_url:
+                        continue
+                    # Do not attempt to upload until all children are uploaded
+                    children = utils.compute_children(res)
+                    if any(not utils.is_uploaded(child) for child in children):
+                        continue
+                    if isinstance(res, spatial.DataBasic):
+                        utils.sanitize_data_colormaps(res)
+                    if isinstance(res, manifests.View) and update_contents:
+                        res.contents = utils.compute_children(res)
+                    res.validate()
+                    json_dict = utils.construct_upload_dict(res)
+                    res._future_url = executor.submit(
+                        self._upload,
+                        resource=res,
+                        verbose=verbose,
+                        chunk_size=chunk_size,
+                        json_dict=json_dict,
+                        post_url=PROJECT_UPLOAD_URL_SPEC,
+                        file_resp_futures=file_resp_futures,
+                        executor=executor,
+                    )
+                # This raises an error if an async file upload failed
+                for value in [_ for _ in file_resp_futures]:
+                    if not value.done():
+                        uploads_complete = False
+                        continue
+                    resp = value.result()
+                    if not resp.ok:
+                        raise ValueError(resp.text)
+                    file_resp_futures.remove(value)
+                if uploads_complete:
+                    break
+        finally:
+            executor.shutdown(wait=True)
+        if verbose:
+            utils.log('Upload complete')
+        return resource._url
 
     def upload_slide(
             self,
@@ -250,7 +299,7 @@ class Session(properties.HasProperties):
             verbose=False,
             autofill_plane=True,
             thumbnail=None,
-            chunk_size=CHUNK_SIZE
+            chunk_size=CHUNK_SIZE,
     ):
         """Upload a Slide to a View
 
@@ -264,7 +313,7 @@ class Session(properties.HasProperties):
         * **thumbnail** - image to upload as thumbnail for the slide; this
           may also be updated in the web app.
         * **chunk_size** - chunk size for thumbnail upload, must be a
-          multiple of 256 * 1024. By default, 1 * 256 * 1024 is used.
+          multiple of 256 * 1024. By default, 20 MB (80 * 256 * 1024) is used.
         """
         if not isinstance(slide, scene.Slide):
             raise ValueError(
@@ -281,7 +330,7 @@ class Session(properties.HasProperties):
                 view_url = utils.convert_url_project_to_view(view_url)
             if not utils.match_url_view(view_url):
                 raise ValueError('view_url is invalid: {}'.format(view_url))
-            post_url = view_url + '/slides'
+            post_url = VIEW_SLIDES_URL_SPEC.format(view_url=view_url)
         else:
             post_url = None
         if autofill_plane and slide.scene.camera and not slide.annotation_plane:
@@ -289,6 +338,8 @@ class Session(properties.HasProperties):
                 slide.scene.camera
             )
         slide.validate()
+        if thumbnail:
+            slide._thumbnail = thumbnail
         view = self.download(
             url=view_url or slide._url.split('/slides/')[0],
             recursive=False,
@@ -304,8 +355,10 @@ class Session(properties.HasProperties):
             chunk_size=chunk_size,
             json_dict=json_dict,
             post_url=post_url,
-            thumbnail=thumbnail,
+            executor=utils.SynchronousExecutor(),
         )
+        if verbose:
+            print('')
         return output_url
 
     def upload_feedback(self, feedback, slide_url=None, verbose=True):
@@ -346,22 +399,31 @@ class Session(properties.HasProperties):
             chunk_size=None,
             json_dict=json_dict,
             post_url=post_url,
-            thumbnail=None,
+            executor=utils.SynchronousExecutor(),
         )
+        if verbose:
+            print('')
         return output_url
 
     def _upload(
-            self, resource, verbose, chunk_size, json_dict, post_url, thumbnail
+            self,
+            resource,
+            verbose,
+            chunk_size,
+            json_dict,
+            post_url,
+            executor,
+            file_resp_futures=None,
     ):
         """Core upload functionality, used by other upload_* methods
 
         Use :code:`upload`, :code:`upload_slide`, or :code:`upload_feedback`
         instead.
         """
+        if verbose:
+            utils.log('Starting upload of {}'.format(resource), False)
         if not getattr(resource, '_url', None):
-            if verbose:
-                print('uploading {}'.format(resource.__class__.__name__))
-            resp = requests.post(
+            resp = self.session.post(
                 post_url.format(
                     base=self.endpoint,
                     org=self.org,
@@ -373,60 +435,60 @@ class Session(properties.HasProperties):
                     ),
                 ),
                 json=json_dict,
-                headers=self.headers,
             )
-        elif (getattr(resource, '_url', None)
-              and getattr(resource, '_touched', True)):
-            if verbose:
-                print('updating {}'.format(resource.__class__.__name__))
-            resp = requests.patch(
+        elif getattr(resource, '_touched', True):
+            resp = self.session.patch(
                 resource._url,
                 json=json_dict,
-                headers=self.headers,
             )
         else:
             return resource._url
         if not resp.ok:
             raise ValueError(resp.text)
-        utils.process_uploaded_resource(resource, resp.json()['links']['self'])
-        if isinstance(resource, files.base._BaseFile):
-            url = resp.json()['links']['location']
-            if isinstance(resource,
-                          files.Array) and resource.array is not None:
-                if verbose:
-                    print('uploading binary array data')
-                file_resp = utils.upload_array(resource.array, url, chunk_size)
-            elif isinstance(resource,
-                            files.Image) and resource.image is not None:
-                if verbose:
-                    print('uploading binary image data')
-                file_resp = utils.upload_image(resource.image, url, chunk_size)
-            else:
-                raise ValueError(
-                    'Unknown file resource: {}'.format(
-                        resource.__class__.__name__
-                    )
-                )
-            if not file_resp.ok:
-                raise ValueError(file_resp.text)
-        if thumbnail and 'thumbnail' in resp.json()['links']:
+        file_resp = None
+        file_kwargs = {
+            'chunk_size': chunk_size,
+            'session': self.session,
+        }
+        if isinstance(resource, files.Array) and resource.array is not None:
             if verbose:
-                print('uploading thumbnail')
-            thumb_file = files.Thumbnail(thumbnail)
-            thumb_resp = requests.put(
-                resp.json()['links']['thumbnail'],
-                json=thumb_file.serialize(include_class=False),
-                headers=self.headers,
+                utils.log('   Array upload of {}'.format(resource), False)
+            file_resp = executor.submit(
+                utils.upload_array,
+                arr=resource.array,
+                url=resp.json()['links']['location'],
+                **file_kwargs
             )
-            if thumb_resp.ok:
-                utils.upload_image(
-                    thumb_file.image,
-                    thumb_resp.json()['links']['location'],
-                    chunk_size,
+        elif isinstance(resource, files.Image) and resource.image is not None:
+            if verbose:
+                utils.log('   Image upload of {}'.format(resource), False)
+            file_resp = executor.submit(
+                utils.upload_image,
+                img=resource.image,
+                url=resp.json()['links']['location'],
+                **file_kwargs
+            )
+        if file_resp and file_resp_futures is not None:
+            file_resp_futures.append(file_resp)
+        thumbnail = getattr(resource, '_thumbnail', None)
+        if thumbnail and 'thumbnail' in resp.json()['links']:
+            thumbnail_file = files.Thumbnail(thumbnail)
+            if verbose:
+                utils.log('   Thumb upload of {}'.format(resource), False)
+            thumbnail_resp = self.session.put(
+                resp.json()['links']['thumbnail'],
+                json=thumbnail_file.serialize(include_class=False),
+            )
+            if thumbnail_resp.ok:
+                executor.submit(
+                    utils.upload_image,
+                    img=thumbnail_file.image,
+                    url=thumbnail_resp.json()['links']['location'],
+                    **file_kwargs
                 )
         if verbose:
-            print('success!')
-        return resource._url
+            utils.log('Finished upload of {}'.format(resource), False)
+        return resp.json()['links']['self']
 
     def download(
             self,
@@ -435,8 +497,9 @@ class Session(properties.HasProperties):
             copy=False,
             verbose=False,
             allow_failure=False,
-            chunk_size=CHUNK_SIZE,
-            _lookup_dict=None,
+            parallel=PARALLEL,
+            workers=100,
+            executor=None,
     ):
         """Download resources from a Project
 
@@ -458,15 +521,120 @@ class Session(properties.HasProperties):
           returns the url rather than raising an error. This is possibly
           useful when recursively downloading a View with limited permissions.
           Default is False.
-        * **chunk_size** - chunk size for file upload, must be a multiple
-          of 256 * 1024. By default, 1 * 256 * 1024 is used.
+        * **parallel** - Perform concurrent downloads using Python threading.
+          By default, this is True if concurrent.futures is available.
+        * **workers** - Maximum number of thread workers to use; ignored
+          if parallel=False or alternative executor is provided.
+          Default is 100.
+        * **executor** - Alternative function executor for parallelization.
+          Must implement :code:`executor.submit(fn, *args, **kwargs)` and
+          :code:`executor.shutdown(wait)`. The :code:`submit` method
+          must return a "future" object that implements :code:`future.done()`
+          and :code:`future.result()`.
+        """
+        if not executor:
+            executor = utils.get_default_executor(parallel, verbose, workers)
+        # Lookup dictionary holds URLs and corresponding downloaded JSON
+        # payload. During recursive download, additional URLs are added.
+        # Download is complete when all URL keys have payloads.
+        lookup_dict = {url: None}
+        try:
+            while True:
+                downloads_complete = True
+                for key, value in sorted(lookup_dict.copy().items()):
+                    # If URL payload is None, initiate download. This
+                    # also adds child URLs to the lookup_dict.
+                    if value is None:
+                        downloads_complete = False
+                        lookup_dict[key] = executor.submit(
+                            self._download_resource_json,
+                            url=key,
+                            recursive=recursive,
+                            verbose=verbose,
+                            allow_failure=allow_failure,
+                            lookup_dict=lookup_dict,
+                        )
+                        continue
+                    # Ignore incomplete and resolve complete futures
+                    if isinstance(value, (Future, utils.SynchronousFuture)):
+                        downloads_complete = False
+                        if value.done():
+                            lookup_dict[key] = value.result()
+                        continue
+                    # Failed downloads will use URL as value if allow_failure
+                    if isinstance(value, string_types):
+                        continue
+                    # Check for binary download link, and if present,
+                    # initiate download.
+                    location = value.get('links', {}).get('location')
+                    if not location:
+                        continue
+                    if isinstance(location, string_types):
+                        downloads_complete = False
+                        value['links']['location'] = executor.submit(
+                            self.session.get,
+                            location,
+                        )
+                        continue
+                    # Ignore incomplete and resolve complete futures
+                    if isinstance(location, (Future, utils.SynchronousFuture)):
+                        if not location.done():
+                            downloads_complete = False
+                            continue
+                        if verbose:
+                            file_type = value.get('type', '/file')
+                            utils.log(
+                                'Downloaded binary data for {} {}'.format(
+                                    file_type.split('/')[1].title(),
+                                    value.get('uid', ''),
+                                ),
+                                False,
+                            )
+                        # Stash the download response in links
+                        value['links']['location'] = location.result()
+                if downloads_complete:
+                    break
+        finally:
+            executor.shutdown(wait=True)
+        if verbose:
+            utils.log('Constructing resources from data', False)
+        # Convert downloaded JSON to Python object
+        for key, value in lookup_dict.items():
+            if isinstance(value, dict):
+                lookup_dict[key] = utils.build_resource_from_json(
+                    key, value, copy
+                )
+        # Replace URLs with pointers to Python objects
+        for resource in lookup_dict.values():
+            if isinstance(resource, files.base._BaseUIDModel):
+                utils.populate_resource_pointers(resource, lookup_dict)
+        if verbose:
+            utils.log(
+                'Finished download of {}'.format(
+                    lookup_dict[url].__class__.__name__,
+                ),
+            )
+        return lookup_dict[url]
+
+    def _download_resource_json(
+            self,
+            url,
+            recursive,
+            verbose,
+            allow_failure,
+            lookup_dict,
+    ):
+        """Helper method to fetch resource JSON
+
+        Download from the provided URL and update the lookup_dict
+        with additional resource URLs.
         """
         resp = None
         # If /app/ url is provided, attempt to use Project API url, but
         # fall back to View API url.
         if utils.match_url_app(url):
             project_url = utils.convert_url_app_to_project(url)
-            resp = requests.get(project_url, headers=self.headers)
+            resp = self.session.get(project_url)
             if resp.ok:
                 url = project_url
             else:
@@ -475,119 +643,39 @@ class Session(properties.HasProperties):
                 copy = True
                 url = utils.convert_url_project_to_view(project_url)
         if not resp or not resp.ok:
-            resp = requests.get(url, headers=self.headers)
+            resp = self.session.get(url)
         if not resp.ok:
             if allow_failure:
                 return url
             raise ValueError('Unable to download {}'.format(url))
-
-        # Get resource type and instantiate the resource
-        if 'type' in resp.json():
-            resource_type = resp.json()['type']
-            if '/' in resource_type:
-                base_type, sub_type = resource_type.split('/')
-            else:
-                base_type, sub_type = resource_type, None
-        else:
-            base_type, sub_type = utils.types_from_url(url)
-        resource_class = utils.find_class(base_type, sub_type)
-        if verbose:
-            print('Downloading {}'.format(resource_class.__name__))
-
-        resource = resource_class.deserialize(
-            properties.filter_props(resource_class, resp.json())[0]
+        resource_json = resp.json()
+        resource_class = utils.find_class_from_resp(
+            url=url, resp_type=resource_json.get('type')
         )
-
+        if verbose:
+            utils.log(
+                'Downloaded metadata for {} {}'.format(
+                    resource_class.__name__,
+                    resource_json.get('uid', ''),
+                ),
+                False,
+            )
         # Do not attempt recursive download of Slide/Feedback
-        if isinstance(resource, scene.slide._BaseCollaborationModel):
+        if issubclass(resource_class, scene.slide._BaseCollaborationModel):
             recursive = False
 
-        # Patch in elements since they may not be present on API response
-        if (isinstance(resource, manifests.View)
-                and 'elements' not in resp.json()):
-            resource.elements = [
-                item for item in resource.contents
-                if item.split('/')[-3] == 'elements'
-            ]
-
-        # Download binary data
-        if isinstance(resource, files.base._BaseFile):
-            if verbose:
-                print('Downloading binary data')
-            file_resp = requests.get(resp.json()['links']['location'])
-            if not file_resp.ok:
-                raise ValueError(file_resp.text)
-            data = file_resp.content
-            if isinstance(resource, files.Array):
-                resource._array = np.frombuffer(
-                    buffer=data,
-                    dtype=files.files.ARRAY_DTYPES[resource.dtype][0],
-                ).reshape(resource.shape)
-            elif isinstance(resource, files.Image):
-                fid = BytesIO()
-                fid.write(data)
-                fid.seek(0)
-                resource._image = fid
-            else:
-                raise ValueError(
-                    'Unknown file resource: {}'.format(
-                        resource.__class__.__name__
-                    )
-                )
-
         if recursive:
-            if _lookup_dict is None:
-                _lookup_dict = {}
-            _lookup_dict.update({url: resource})
-            self._recursive_download(
-                resource=resource,
-                recursive=recursive,
-                copy=copy,
-                verbose=verbose,
-                allow_failure=allow_failure,
-                chunk_size=chunk_size,
-                _lookup_dict=_lookup_dict,
-            )
-        if not copy:
-            utils.process_uploaded_resource(resource, url)
-        return resource
-
-    def _recursive_download(self, resource, _lookup_dict, **download_kwargs):
-        """Download all pointers recursively and set them on the resource"""
-        for name, prop in sorted(resource._props.items()):
-            value = getattr(resource, name)
-            if value is None:
-                continue
-            elif utils.is_pointer(prop):
-                if isinstance(value, string_types):
-                    if value in _lookup_dict:
-                        res = _lookup_dict.get(value)
-                    else:
-                        res = self.download(
-                            url=value,
-                            _lookup_dict=_lookup_dict,
-                            **download_kwargs
-                        )
-                else:
-                    res = value
-                setattr(resource, name, res)
-            elif utils.is_list_of_pointers(prop):
-                res_list = []
-                for val in value:
-                    if isinstance(val, string_types):
-                        if val in _lookup_dict:
-                            res = _lookup_dict.get(val)
-                        else:
-                            res = self.download(
-                                url=val,
-                                _lookup_dict=_lookup_dict,
-                                **download_kwargs
-                            )
-                    else:
-                        res = val
-                    res_list.append(res)
-                setattr(resource, name, res_list)
-        return resource
+            for name, prop in sorted(resource_class._props.items()):
+                value = resource_json.get(name)
+                if name in IGNORED_PROPS or not value:
+                    continue
+                if utils.is_pointer(prop) and isinstance(value, string_types):
+                    lookup_dict.setdefault(value)
+                elif utils.is_list_of_pointers(prop):
+                    for val in value:
+                        if isinstance(val, string_types):
+                            lookup_dict.setdefault(val)
+        return resource_json
 
     def delete(self, resource):
         """Delete a downloaded resource
@@ -612,9 +700,8 @@ class Session(properties.HasProperties):
                     resource.__class__.__name__
                 )
             )
-        resp = requests.delete(
-            url,
-            headers=self.headers,
-        )
+        resp = self.session.delete(url)
         if not resp.ok:
             raise ValueError('Failed to delete: {}'.format(url))
+        if getattr(resource, '_url', None):
+            resource.url = None

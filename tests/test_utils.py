@@ -9,12 +9,13 @@ import png
 import properties
 import properties.extras
 import pytest
+import requests
 from lfview.client.constants import CHUNK_SIZE
 from lfview.client import utils
 from lfview.resources import files, manifests, scene, spatial
 
 
-@mock.patch('lfview.client.utils.requests.put')
+@mock.patch('requests.Session.put')
 def test_upload_chunk(mock_put):
     mock_res = mock.MagicMock()
     mock_data = mock.MagicMock()
@@ -26,6 +27,7 @@ def test_upload_chunk(mock_put):
         stop=200,
         total=500,
         content_type='application/something',
+        session=requests.Session(),
     )
     mock_put.assert_called_once_with(
         url='https://example.com',
@@ -39,10 +41,13 @@ def test_upload_chunk(mock_put):
     assert res is mock_res
 
 
+@mock.patch('lfview.client.utils.requests.Session')
 @mock.patch('lfview.client.utils.upload_chunk')
-def test_upload_array(mock_upload_chunk):
+def test_upload_array(mock_upload_chunk, mock_session_class):
     mock_res = mock.MagicMock()
     mock_upload_chunk.return_value = mock_res
+    mock_session = mock.MagicMock()
+    mock_session_class.return_value = mock_session
     arr = np.ones(CHUNK_SIZE // 8 + 1).astype('float64')
     res = utils.upload_array(arr, 'https://example.com')
     mock_upload_chunk.assert_has_calls(
@@ -54,6 +59,7 @@ def test_upload_array(mock_upload_chunk):
                 stop=CHUNK_SIZE,
                 total=arr.nbytes,
                 content_type='application/octet-stream',
+                session=mock_session,
             ),
             mock.call(
                 url='https://example.com',
@@ -62,16 +68,20 @@ def test_upload_array(mock_upload_chunk):
                 stop=arr.nbytes,
                 total=arr.nbytes,
                 content_type='application/octet-stream',
+                session=mock_session,
             ),
         ]
     )
     assert res is mock_res
 
 
+@mock.patch('lfview.client.utils.requests.Session')
 @mock.patch('lfview.client.utils.upload_chunk')
-def test_upload_image(mock_upload_chunk):
+def test_upload_image(mock_upload_chunk, mock_session_class):
     mock_res = mock.MagicMock()
     mock_upload_chunk.return_value = mock_res
+    mock_session = mock.MagicMock()
+    mock_session_class.return_value = mock_session
     img = io.BytesIO()
     s = [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]]
     w = png.Writer(4, 4, greyscale=True, bitdepth=16)
@@ -85,6 +95,7 @@ def test_upload_image(mock_upload_chunk):
         stop=img.tell(),
         total=img.tell(),
         content_type='image/png',
+        session=mock_session,
     )
     assert res is mock_res
 
@@ -138,7 +149,7 @@ def test_is_list_of_pointers():
     ]
 )
 def test_find_class_good(base_type, sub_type, value):
-    assert utils.find_class(base_type, sub_type) is value
+    assert utils.find_class_from_types(base_type, sub_type) is value
 
 
 @pytest.mark.parametrize(
@@ -153,7 +164,7 @@ def test_find_class_good(base_type, sub_type, value):
 )
 def test_find_class_bad(base_type, sub_type):
     with pytest.raises(ValueError):
-        utils.find_class(base_type, sub_type)
+        utils.find_class_from_types(base_type, sub_type)
 
 
 class MockResource(files.base._BaseUIDModel):

@@ -33,7 +33,9 @@ fi
 VERSION=$(grep current_version .bumpversion.cfg | awk '{ print $3 }')
 MAJOR=$(echo $VERSION | awk -F'.' '{ print $1 }')
 MINOR=$(echo $VERSION | awk -F'.' '{ print $2 }')
-PATCH=$(echo $VERSION | awk -F'.' '{ print $3 }')
+PATCH_BETA=$(echo $VERSION | awk -F'.' '{ print $3 }')
+PATCH=$(echo $PATCH_BETA | awk -F'b' '{ print $1 }')
+BETA=$(echo $PATCH_BETA | awk -F'b' '{ print $2 }')
 
 mkdir .tmp
 cd .tmp
@@ -50,7 +52,9 @@ fi
 PREVIOUS=$(grep current_version .tmp/remote/.bumpversion.cfg | awk '{ print $3 }')
 PREVIOUS_MAJOR=$(echo $PREVIOUS | awk -F'.' '{ print $1 }')
 PREVIOUS_MINOR=$(echo $PREVIOUS | awk -F'.' '{ print $2 }')
-PREVIOUS_PATCH=$(echo $PREVIOUS | awk -F'.' '{ print $3 }')
+PREVIOUS_PATCH_BETA=$(echo $PREVIOUS | awk -F'.' '{ print $3 }')
+PREVIOUS_PATCH=$(echo $PREVIOUS_PATCH_BETA | awk -F'b' '{ print $1 }')
+PREVIOUS_BETA=$(echo $PREVIOUS_PATCH_BETA | awk -F'b' '{ print $2 }')
 
 if [ "$MAJOR" -gt "$PREVIOUS_MAJOR" ]; then
     finish 0
@@ -64,6 +68,10 @@ elif [ $PATCH -gt $PREVIOUS_PATCH ]; then
     finish 0
 elif [ "$PATCH" -lt $PREVIOUS_PATCH ]; then
     finish 1
+elif [ $BETA -a $PREVIOUS_BETA -a $BETA -gt $ $PREVIOUS_BETA ]; then
+    finish 0
+elif [ ! $BETA -a $PREVIOUS_BETA ]; then
+    finish 0
 fi
 
 finish 1

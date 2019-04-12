@@ -1,8 +1,12 @@
 """Utility functions to support session uploads and downloads"""
+from __future__ import print_function
+
 from collections import OrderedDict
+from io import BytesIO
 import re
 
-from lfview.resources import files, scene, spatial
+from lfview.resources import files, manifests, scene, spatial
+import numpy as np
 import properties
 import properties.extras
 import requests
@@ -10,10 +14,15 @@ from six import string_types
 
 from .constants import CHUNK_SIZE, IGNORED_PROPS, RESOURCE_REGISTRIES
 
+try:
+    from concurrent.futures import ThreadPoolExecutor
+except ImportError:
+    pass
 
-def upload_chunk(url, dat, start, stop, total, content_type):
+
+def upload_chunk(url, dat, start, stop, total, content_type, session):
     """Upload a chunk of a file"""
-    res = requests.put(
+    res = session.put(
         url=url,
         data=dat,
         headers={
@@ -29,10 +38,12 @@ def upload_chunk(url, dat, start, stop, total, content_type):
     return res
 
 
-def upload_array(arr, url, chunk_size=CHUNK_SIZE):
+def upload_array(arr, url, chunk_size=CHUNK_SIZE, session=None):
     """Upload an array to specified URL"""
     length = arr.nbytes
     arr_bytes = arr.tobytes()
+    if not session:
+        session = requests.Session()
     for start in range(0, length, chunk_size):
         stop = min(start + chunk_size, length)
         res = upload_chunk(
@@ -42,14 +53,17 @@ def upload_array(arr, url, chunk_size=CHUNK_SIZE):
             stop=stop,
             total=length,
             content_type='application/octet-stream',
+            session=session,
         )
     return res
 
 
-def upload_image(img, url, chunk_size=CHUNK_SIZE):
+def upload_image(img, url, chunk_size=CHUNK_SIZE, session=None):
     """Upload an image to specified URL"""
     img.seek(0, 2)
     length = img.tell()
+    if not session:
+        session = requests.Session()
     for start in range(0, length, chunk_size):
         stop = min(start + chunk_size, length)
         img.seek(start)
@@ -60,6 +74,7 @@ def upload_image(img, url, chunk_size=CHUNK_SIZE):
             stop=stop,
             total=length,
             content_type='image/png',
+            session=session,
         )
     return res
 
@@ -80,7 +95,16 @@ def is_list_of_pointers(prop):
     return is_pointer(prop.prop)
 
 
-def find_class(base_type, sub_type):
+def find_class_from_resp(url, resp_type=None):
+    """Return class that matches input URL and 'type' from JSON response"""
+    if resp_type:
+        if '/' in resp_type:
+            return find_class_from_types(*resp_type.split('/'))
+        return find_class_from_types(resp_type, None)
+    return find_class_from_types(*types_from_url(url))
+
+
+def find_class_from_types(base_type, sub_type):
     """Search resource registries class that matches specified type"""
     if base_type:
         for registry in RESOURCE_REGISTRIES:
@@ -94,6 +118,28 @@ def find_class(base_type, sub_type):
             base_type, '/{}'.format(sub_type) if sub_type else ''
         )
     )
+
+
+def types_from_url(url):
+    """Extract API resource base-type and sub-type from URL
+
+    Valid inputs include project service, view service and app URLs.
+    """
+    if match_url_slide(url):
+        return 'slides', None
+    if match_url_feedback(url):
+        return 'feedback', None
+    if match_url_app(url) or match_url_project(url) or match_url_view(url):
+        return 'views', None
+    resource_re = (
+        r'^.+/api/v1/(view/[a-z0-9]+|project)/[a-z0-9]+/[a-z0-9]+'
+        r'/(?P<basetype>[a-z]+)/(?P<subtype>[a-z]+)/[a-z0-9]+$'
+    )
+    match = re.search(resource_re, url)
+    if match:
+        groupdict = match.groupdict()
+        return groupdict['basetype'], groupdict['subtype']
+    raise ValueError('Unknown resource type from {}'.format(url))
 
 
 def compute_children(resource):
@@ -130,6 +176,8 @@ def touch(resource, recursive=False):
     resource._touched = True
     if recursive:
         for item in compute_children(resource):
+            if isinstance(item, string_types):
+                continue
             item._touched = True
 
 
@@ -137,6 +185,7 @@ def process_uploaded_resource(resource, url):
     """Save url as attribute on resource and setup change observer"""
     if not getattr(resource, '_url', None):
         resource._url = url
+    resource._future_url = None
     if not getattr(resource, '_change_observer', None):
         resource._change_observer = properties.observer(
             resource,
@@ -146,6 +195,97 @@ def process_uploaded_resource(resource, url):
         )
     resource._touched = False
     return resource
+
+
+def is_uploaded(resource):
+    """Determine if resource is up-to-date with the server"""
+    if isinstance(resource, string_types):
+        return True
+    if not getattr(resource, '_url', None):
+        return False
+    return not getattr(resource, '_touched', True)
+
+
+def construct_upload_dict(resource):
+    """Method to construct upload body from resource with pointers"""
+    json_dict = {}
+    for name, prop in resource._props.items():
+        value = getattr(resource, name)
+        if name in IGNORED_PROPS or value is None:
+            continue
+        if is_pointer(prop):
+            json_value = getattr(value, '_url', value)
+        elif is_list_of_pointers(prop):
+            json_value = []
+            for val in value:
+                json_value.append(getattr(val, '_url', val))
+        else:
+            json_value = prop.serialize(value, include_class=False)
+        json_dict.update({name: json_value})
+    return json_dict
+
+
+def build_resource_from_json(url, resource_json, copy):
+    """Helper method to construct Python object from resource JSON"""
+    resource_class = find_class_from_resp(
+        url=url, resp_type=resource_json.get('type')
+    )
+    resource = resource_class.deserialize(
+        properties.filter_props(resource_class, resource_json)[0]
+    )
+    # Patch in elements since they may not be present on API response
+    if (isinstance(resource, manifests.View)
+            and 'elements' not in resource_json):
+        resource.elements = [
+            item for item in resource.contents
+            if item.split('/')[-3] == 'elements'
+        ]
+    if isinstance(resource, files.base._BaseFile):
+        file_resp = resource_json['links']['location']
+        if not file_resp.ok:
+            raise ValueError(file_resp.text)
+        data = file_resp.content
+        if isinstance(resource, files.Array):
+            resource.array = np.frombuffer(
+                buffer=data,
+                dtype=files.files.ARRAY_DTYPES[resource.dtype][0],
+            ).reshape(resource.shape)
+        elif isinstance(resource, files.Image):
+            fid = BytesIO()
+            fid.write(data)
+            fid.seek(0)
+            resource.image = fid
+        else:
+            raise ValueError(
+                'Unknown file resource: {}'.format(
+                    resource.__class__.__name__
+                )
+            )
+    if not copy:
+        process_uploaded_resource(resource, url)
+    return resource
+
+
+def populate_resource_pointers(resource, lookup_dict):
+    """Helper method to update pointer URLs with corresponding objects"""
+    for name, prop in sorted(resource._props.items()):
+        value = getattr(resource, name)
+        if value is None:
+            continue
+        elif is_pointer(prop):
+            if value not in lookup_dict:
+                new_value = value
+            else:
+                new_value = lookup_dict[value]
+            setattr(resource, name, new_value)
+        elif is_list_of_pointers(prop):
+            new_value_list = []
+            for val in value:
+                if val not in lookup_dict:
+                    new_value_list.append(val)
+                else:
+                    new_value_list.append(lookup_dict[val])
+            setattr(resource, name, new_value_list)
 
 
 def match_url_app(url):
@@ -254,28 +394,6 @@ def convert_url_project_to_view(url):
         raise ValueError('Invalid project url: {}'.format(url))
     view_url_string = r'{base}/api/v1/view/{org}/{proj}/{view}'
     return view_url_string.format(**match.groupdict())
-
-
-def types_from_url(url):
-    """Extract API resource base-type and sub-type from URL
-
-    Valid inputs include project service, view service and app URLs.
-    """
-    if match_url_slide(url):
-        return 'slides', None
-    if match_url_feedback(url):
-        return 'feedback', None
-    if match_url_app(url) or match_url_project(url) or match_url_view(url):
-        return 'views', None
-    resource_re = (
-        r'^.+/api/v1/(view/[a-z0-9]+|project)/[a-z0-9]+/[a-z0-9]+'
-        r'/(?P<basetype>[a-z]+)/(?P<subtype>[a-z]+)/[a-z0-9]+$'
-    )
-    match = re.search(resource_re, url)
-    if match:
-        groupdict = match.groupdict()
-        return groupdict['basetype'], groupdict['subtype']
-    raise ValueError('Unknown resource type from {}'.format(url))
 
 
 def drawing_plane_from_camera(camera):
@@ -399,3 +517,61 @@ def sanitize_data_colormaps(data):
         new_mapping.values = ['random'] * len(new_mapping.values)
         data.mappings = [new_mapping] + data.mappings
     return data
+
+
+def log(message, final=True, total_length=70):
+    """Simple print logger that facilitates repeated messages on one line"""
+    end_buffer = max(20, total_length - len(message))
+    print(
+        '\r{}'.format(message),
+        end=end_buffer * ' ' + ('\n' if final else '\r'),
+    )
+
+
+class SynchronousExecutor:
+    """Synchronous executor with similar API to ThreadPoolExecutor
+
+    This class implements :code:`submit` and :code:`shutdown`.
+
+    Note: Exceptions that occur during execution will be raised on
+    :code:`submit`; this differs from ThreadPoolExecutor where
+    exceptions are not raised until accessing the result.
+    """
+
+    @staticmethod
+    def submit(func, *args, **kwargs):
+        """Execute input function and store result in synchronous future"""
+        return SynchronousFuture(func(*args, **kwargs))
+
+    @staticmethod
+    def shutdown(wait=True):
+        """Shutting down a SynchronousExecutor does nothing"""
+        pass
+
+
+class SynchronousFuture:
+    """Result of submitting a function to SynchronousExecutor
+
+    Follows a similar API to concurrent.futures.Future. By the
+    synchronous definition, these futures are "done" on creation.
+    """
+
+    def __init__(self, result):
+        self._result = result
+
+    def done(self):
+        """Returns True since result is defined on instantiation"""
+        return True
+
+    def result(self):
+        """Returns the result provided on instantiation"""
+        return self._result
+
+
+def get_default_executor(parallel, verbose, workers=None):
+    """Return default parallel or synchronous executor"""
+    if parallel:
+        if verbose:
+            log('Initializing thread pool', False)
+        return ThreadPoolExecutor(max_workers=workers)
+    return SynchronousExecutor()
