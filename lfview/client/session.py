@@ -486,7 +486,7 @@ class Session(properties.HasProperties):
                     url=thumbnail_resp.json()['links']['location'],
                     **file_kwargs
                 )
-                if  file_resp_futures is not None:
+                if file_resp_futures is not None:
                     file_resp_futures.append(file_resp)
         return resp.json()['links']['self']
 
