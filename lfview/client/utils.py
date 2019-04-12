@@ -14,6 +14,11 @@ from six import string_types
 
 from .constants import CHUNK_SIZE, IGNORED_PROPS, RESOURCE_REGISTRIES
 
+try:
+    from concurrent.futures import ThreadPoolExecutor
+except ImportError:
+    pass
+
 
 def upload_chunk(url, dat, start, stop, total, content_type, session):
     """Upload a chunk of a file"""
@@ -561,3 +566,13 @@ class SynchronousFuture:
     def result(self):
         """Returns the result provided on instantiation"""
         return self._result
+
+
+
+def get_default_executor(parallel, verbose, workers=None):
+    """Return default parallel or synchronous executor"""
+    if parallel:
+        if verbose:
+            log('Initializing thread pool', False)
+        return ThreadPoolExecutor(max_workers=workers)
+    return SynchronousExecutor()

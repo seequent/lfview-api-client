@@ -1,10 +1,4 @@
 """User session for logging in, uploading, downloading, etc"""
-try:
-    from concurrent.futures import ThreadPoolExecutor, Future
-    PARALLEL = True
-except ImportError:
-    PARALLEL = False
-
 from lfview.resources import files, manifests, scene, spatial
 import properties
 import requests
@@ -23,6 +17,14 @@ from .constants import (
     VIEW_SLIDES_URL_SPEC,
 )
 from . import utils
+
+try:
+    from concurrent.futures import Future
+    PARALLEL = True
+except ImportError:
+    Future = utils.SynchronousFuture
+    PARALLEL = False
+
 
 __version__ = '0.0.1'
 
@@ -187,7 +189,7 @@ class Session(properties.HasProperties):
             chunk_size=CHUNK_SIZE,
             parallel=PARALLEL,
             workers=100,
-            _executor=None,
+            executor=None,
     ):
         """Upload new resource to your Project or update existing resource
 
@@ -210,7 +212,13 @@ class Session(properties.HasProperties):
         * **parallel** - Perform concurrent uploads using Python threading.
           By default, this is True if concurrent.futures is available.
         * **workers** - Maximum number of thread workers to use; ignored
-          if parallel=False. Default is 100.
+          if parallel=False or alternative executor is provided.
+          Default is 100.
+        * **executor** - Alternative function executor for parallelization.
+          Must implement :code:`executor.submit(fn, *args, **kwargs)` and
+          :code:`executor.shutdown(wait)`. The :code:`submit` method
+          must return a "future" object that implements :code:`future.done()`
+          and :code:`future.result()`.
         """
         if not hasattr(resource, 'BASE_TYPE'):
             raise ValueError(
@@ -220,14 +228,8 @@ class Session(properties.HasProperties):
             raise ValueError('Use upload_slide method for Slides')
         if isinstance(resource, scene.Feedback):
             raise ValueError('Use upload_feedback method for Feedback')
-        if _executor:
-            pass
-        elif parallel:
-            if verbose:
-                utils.log('Initializing thread pool', False)
-            _executor = ThreadPoolExecutor(max_workers=workers)
-        else:
-            _executor = utils.SynchronousExecutor()
+        if not executor:
+            executor = utils.get_default_executor(parallel, verbose, workers)
         resources_to_upload = utils.compute_children(resource)
         resources_to_upload.append(resource)
         resources_to_upload = [
@@ -236,53 +238,59 @@ class Session(properties.HasProperties):
         file_resp_futures = []
         if thumbnail:
             resource._thumbnail = thumbnail
-        while True:
-            uploads_complete = True
-            for res in resources_to_upload:
-                # Skip resources that have already been uploaded
-                if utils.is_uploaded(res):
-                    continue
-                future_url = getattr(res, '_future_url', None)
-                # Finalize processing after uploads are complete
-                if future_url and future_url.done():
-                    utils.process_uploaded_resource(res, future_url.result())
-                    continue
-                # If we get to this point, there is still work to do
-                uploads_complete = False
-                if future_url:
-                    continue
-                # Do not attempt to upload until all children are uploaded
-                children = utils.compute_children(res)
-                if any(not utils.is_uploaded(child) for child in children):
-                    continue
-                if isinstance(res, spatial.DataBasic):
-                    utils.sanitize_data_colormaps(res)
-                if isinstance(res, manifests.View) and update_contents:
-                    res.contents = utils.compute_children(res)
-                res.validate()
-                json_dict = utils.construct_upload_dict(res)
-                res._future_url = _executor.submit(
-                    self._upload,
-                    resource=res,
-                    verbose=verbose,
-                    chunk_size=chunk_size,
-                    json_dict=json_dict,
-                    post_url=PROJECT_UPLOAD_URL_SPEC,
-                    file_resp_futures=file_resp_futures,
-                    executor=_executor,
-                )
-            # This raises an error if an async file upload failed
-            for value in [_ for _ in file_resp_futures]:
-                if not value.done():
+        try:
+            while True:
+                uploads_complete = True
+                for res in resources_to_upload:
+                    # Skip resources that have already been uploaded
+                    if utils.is_uploaded(res):
+                        continue
+                    future_url = getattr(res, '_future_url', None)
+                    # Finalize processing after uploads are complete
+                    if future_url and future_url.done():
+                        utils.process_uploaded_resource(
+                            res, future_url.result()
+                        )
+                        continue
+                    # If we get to this point, there is still work to do
                     uploads_complete = False
-                    continue
-                resp = value.result()
-                if not resp.ok:
-                    raise ValueError(resp.text)
-                file_resp_futures.remove(value)
-            if uploads_complete:
-                break
-        _executor.shutdown(wait=True)
+                    if future_url:
+                        continue
+                    # Do not attempt to upload until all children are uploaded
+                    children = utils.compute_children(res)
+                    if any(not utils.is_uploaded(child) for child in children):
+                        continue
+                    if isinstance(res, spatial.DataBasic):
+                        utils.sanitize_data_colormaps(res)
+                    if isinstance(res, manifests.View) and update_contents:
+                        res.contents = utils.compute_children(res)
+                    res.validate()
+                    json_dict = utils.construct_upload_dict(res)
+                    res._future_url = executor.submit(
+                        self._upload,
+                        resource=res,
+                        verbose=verbose,
+                        chunk_size=chunk_size,
+                        json_dict=json_dict,
+                        post_url=PROJECT_UPLOAD_URL_SPEC,
+                        file_resp_futures=file_resp_futures,
+                        executor=executor,
+                    )
+                # This raises an error if an async file upload failed
+                for value in [_ for _ in file_resp_futures]:
+                    if not value.done():
+                        uploads_complete = False
+                        continue
+                    resp = value.result()
+                    if not resp.ok:
+                        raise ValueError(resp.text)
+                    file_resp_futures.remove(value)
+                if uploads_complete:
+                    break
+        finally:
+            executor.shutdown(wait=True)
+        if verbose:
+            utils.log('Upload complete')
         return resource._url
 
     def upload_slide(
@@ -348,7 +356,10 @@ class Session(properties.HasProperties):
             chunk_size=chunk_size,
             json_dict=json_dict,
             post_url=post_url,
+            executor=utils.SynchronousExecutor(),
         )
+        if verbose:
+            print('')
         return output_url
 
     def upload_feedback(self, feedback, slide_url=None, verbose=True):
@@ -389,7 +400,10 @@ class Session(properties.HasProperties):
             chunk_size=None,
             json_dict=json_dict,
             post_url=post_url,
+            executor=utils.SynchronousExecutor(),
         )
+        if verbose:
+            print('')
         return output_url
 
     def _upload(
@@ -399,8 +413,8 @@ class Session(properties.HasProperties):
             chunk_size,
             json_dict,
             post_url,
+            executor,
             file_resp_futures=None,
-            executor=None,
     ):
         """Core upload functionality, used by other upload_* methods
 
@@ -437,8 +451,6 @@ class Session(properties.HasProperties):
             'chunk_size': chunk_size,
             'session': self.session,
         }
-        if not executor:
-            executor = utils.SynchronousExecutor()
         if isinstance(resource, files.Array) and resource.array is not None:
             if verbose:
                 utils.log('   Array upload of {}'.format(resource), False)
@@ -476,7 +488,7 @@ class Session(properties.HasProperties):
                     **file_kwargs
                 )
         if verbose:
-            utils.log('Finished upload of {}'.format(res), False)
+            utils.log('Finished upload of {}'.format(resource), False)
         return resp.json()['links']['self']
 
     def download(
@@ -488,7 +500,7 @@ class Session(properties.HasProperties):
             allow_failure=False,
             parallel=PARALLEL,
             workers=100,
-            _executor=None,
+            executor=None,
     ):
         """Download resources from a Project
 
@@ -513,82 +525,90 @@ class Session(properties.HasProperties):
         * **parallel** - Perform concurrent downloads using Python threading.
           By default, this is True if concurrent.futures is available.
         * **workers** - Maximum number of thread workers to use; ignored
-          if parallel=False. Default is 100.
+          if parallel=False or alternative executor is provided.
+          Default is 100.
+        * **executor** - Alternative function executor for parallelization.
+          Must implement :code:`executor.submit(fn, *args, **kwargs)` and
+          :code:`executor.shutdown(wait)`. The :code:`submit` method
+          must return a "future" object that implements :code:`future.done()`
+          and :code:`future.result()`.
         """
-        if verbose:
-            utils.log('Starting download', False)
-        if _executor:
-            pass
-        elif recursive and parallel:
-            if verbose:
-                utils.log('Initializing thread pool', False)
-            _executor = ThreadPoolExecutor(max_workers=workers)
-        else:
-            _executor = utils.SynchronousExecutor()
+        if not executor:
+            executor = utils.get_default_executor(parallel, verbose, workers)
+        # Lookup dictionary holds URLs and corresponding downloaded JSON
+        # payload. During recursive download, additional URLs are added.
+        # Download is complete when all URL keys have payloads.
         lookup_dict = {url: None}
-        while True:
-            downloads_complete = True
-            for key, value in sorted(lookup_dict.copy().items()):
-                if value is None:
-                    downloads_complete = False
-                    lookup_dict[key] = _executor.submit(
-                        self._download_resource_json,
-                        url=key,
-                        recursive=recursive,
-                        verbose=verbose,
-                        allow_failure=allow_failure,
-                        lookup_dict=lookup_dict,
-                    )
-                    continue
-                if isinstance(value, (Future, utils.SynchronousFuture)):
-                    downloads_complete = False
-                    if value.done():
-                        lookup_dict[key] = value.result()
-                    continue
-                if isinstance(value, string_types):
-                    continue
-                location = value.get('links', {}).get('location')
-                if not location:
-                    continue
-                if isinstance(location, string_types):
-                    downloads_complete = False
-                    value['links']['location'] = _executor.submit(
-                        self.session.get,
-                        location,
-                    )
-                    continue
-                if isinstance(location, (Future, utils.SynchronousFuture)):
-                    if not location.done():
+        try:
+            while True:
+                downloads_complete = True
+                for key, value in sorted(lookup_dict.copy().items()):
+                    # If URL payload is None, initiate download. This
+                    # also adds child URLs to the lookup_dict.
+                    if value is None:
                         downloads_complete = False
-                        continue
-                    if verbose:
-                        file_type = value.get('type', '/file')
-                        utils.log(
-                            'Downloaded binary data for {} {}'.format(
-                                file_type.split('/')[1].title(),
-                                value.get('uid', ''),
-                            ),
-                            False,
+                        lookup_dict[key] = executor.submit(
+                            self._download_resource_json,
+                            url=key,
+                            recursive=recursive,
+                            verbose=verbose,
+                            allow_failure=allow_failure,
+                            lookup_dict=lookup_dict,
                         )
-                    value['links']['location'] = location.result()
-            if downloads_complete:
-                break
-
-        _executor.shutdown(wait=True)
-
+                        continue
+                    # Ignore incomplete and resolve complete futures
+                    if isinstance(value, (Future, utils.SynchronousFuture)):
+                        downloads_complete = False
+                        if value.done():
+                            lookup_dict[key] = value.result()
+                        continue
+                    # Failed downloads will use URL as value if allow_failure
+                    if isinstance(value, string_types):
+                        continue
+                    # Check for binary download link, and if present,
+                    # initiate download.
+                    location = value.get('links', {}).get('location')
+                    if not location:
+                        continue
+                    if isinstance(location, string_types):
+                        downloads_complete = False
+                        value['links']['location'] = executor.submit(
+                            self.session.get,
+                            location,
+                        )
+                        continue
+                    # Ignore incomplete and resolve complete futures
+                    if isinstance(location, (Future, utils.SynchronousFuture)):
+                        if not location.done():
+                            downloads_complete = False
+                            continue
+                        if verbose:
+                            file_type = value.get('type', '/file')
+                            utils.log(
+                                'Downloaded binary data for {} {}'.format(
+                                    file_type.split('/')[1].title(),
+                                    value.get('uid', ''),
+                                ),
+                                False,
+                            )
+                        # Stash the download response in links
+                        value['links']['location'] = location.result()
+                if downloads_complete:
+                    break
+        finally:
+            executor.shutdown(wait=True)
         if verbose:
             utils.log('Constructing resources from data', False)
-
+        # Convert downloaded JSON to Python object
         for key, value in lookup_dict.items():
             if isinstance(value, dict):
                 lookup_dict[key] = utils.build_resource_from_json(
                     key, value, copy
                 )
-
+        # Replace URLs with pointers to Python objects
         for resource in lookup_dict.values():
             if isinstance(resource, files.base._BaseUIDModel):
                 utils.populate_resource_pointers(resource, lookup_dict)
-
         if verbose:
             utils.log(
                 'Finished download of {}'.format(

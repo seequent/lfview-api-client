@@ -383,10 +383,13 @@ def test_upload(
 @mock.patch('lfview.client.session.Session._upload')
 @mock.patch('lfview.client.session.Session.download')
 @mock.patch('lfview.client.session.utils.extra_slide_validation')
+@mock.patch('lfview.client.utils.SynchronousExecutor')
 def test_upload_slide(
-        mock_extra_validation, mock_download, mock_upload, view_url, verbose,
-        session
+        mock_executor_class, mock_extra_validation, mock_download,
+        mock_upload, view_url, verbose, session
 ):
+    mock_executor = mock.MagicMock()
+    mock_executor_class.return_value = mock_executor
     mock_extra_validation.return_value = True
     mock_view = mock.MagicMock(elements=[])
     mock_download.return_value = mock_view
@@ -429,6 +432,7 @@ def test_upload_slide(
         chunk_size=CHUNK_SIZE,
         json_dict=expected_json_dict,
         post_url=expected_post_url,
+        executor=mock_executor,
     )
     mock_extra_validation.assert_called_once_with(slide, [])
 
@@ -486,7 +490,10 @@ def test_bad_upload_slide(slide, view_url, verbose, session):
 )
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.Session._upload')
-def test_upload_feedback(mock_upload, feedback, slide_url, verbose, session):
+@mock.patch('lfview.client.utils.SynchronousExecutor')
+def test_upload_feedback(mock_executor_class, mock_upload, feedback, slide_url, verbose, session):
+    mock_executor = mock.MagicMock()
+    mock_executor_class.return_value = mock_executor
     if isinstance(feedback, scene.Feedback) and not slide_url:
         feedback._url = (
             'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1/feedback/fb1'
@@ -506,6 +513,7 @@ def test_upload_feedback(mock_upload, feedback, slide_url, verbose, session):
             chunk_size=None,
             json_dict=expected_json_dict,
             post_url=expected_post_url,
+            executor=mock_executor,
         )
     else:
         mock_upload.assert_called_once()
