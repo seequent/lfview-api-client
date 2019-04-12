@@ -568,7 +568,6 @@ class SynchronousFuture:
         return self._result
 
 
-
 def get_default_executor(parallel, verbose, workers=None):
     """Return default parallel or synchronous executor"""
     if parallel:

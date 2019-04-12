@@ -25,7 +25,6 @@ except ImportError:
     Future = utils.SynchronousFuture
     PARALLEL = False
 
-
 __version__ = '0.0.1'
 
 

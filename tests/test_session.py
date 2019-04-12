@@ -385,8 +385,8 @@ def test_upload(
 @mock.patch('lfview.client.session.utils.extra_slide_validation')
 @mock.patch('lfview.client.utils.SynchronousExecutor')
 def test_upload_slide(
-        mock_executor_class, mock_extra_validation, mock_download,
-        mock_upload, view_url, verbose, session
+        mock_executor_class, mock_extra_validation, mock_download, mock_upload,
+        view_url, verbose, session
 ):
     mock_executor = mock.MagicMock()
     mock_executor_class.return_value = mock_executor
@@ -491,7 +491,9 @@ def test_bad_upload_slide(slide, view_url, verbose, session):
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.Session._upload')
 @mock.patch('lfview.client.utils.SynchronousExecutor')
-def test_upload_feedback(mock_executor_class, mock_upload, feedback, slide_url, verbose, session):
+def test_upload_feedback(
+        mock_executor_class, mock_upload, feedback, slide_url, verbose, session
+):
     mock_executor = mock.MagicMock()
     mock_executor_class.return_value = mock_executor
     if isinstance(feedback, scene.Feedback) and not slide_url:
