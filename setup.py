@@ -21,15 +21,15 @@ with open('README.rst') as f:
 
 setuptools.setup(
     name='lfview-api-client',
-    version='0.0.1',
+    version='0.0.2',
     packages=setuptools.find_packages(exclude=('tests',)),
     install_requires=[
         'requests',
         'properties[full]>=0.5.6',
         'lfview-resources-files==0.0.2',
         'lfview-resources-spatial==0.0.2',
-        'lfview-resources-manifests==0.0.1',
-        'lfview-resources-scene==0.0.1',
+        'lfview-resources-manifests==0.0.2',
+        'lfview-resources-scene==0.0.2',
         'futures; python_version == "2.7"'
     ],
     extras_require={
