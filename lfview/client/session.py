@@ -12,15 +12,15 @@ from six import string_types
 
 from .constants import (
     CHUNK_SIZE,
-    DEFAULT_ENDPOINT,
+    DEFAUlT_URL_BASE,
     IGNORED_PROPS,
-    ORG_ENDPOINT,
-    PROJECT_ENDPOINT,
-    PROJECT_UID_ENDPOINT,
-    PROJECT_UPLOAD_ENDPOINT,
-    USER_ENDPOINT,
-    VIEW_INVITES_ENDPOINT,
-    VIEW_SLIDES_ENDPOINT,
+    ORG_URL_SPEC,
+    PROJECT_URL_SPEC,
+    PROJECT_UID_URL_SPEC,
+    PROJECT_UPLOAD_URL_SPEC,
+    USER_URL_SPEC,
+    VIEW_INVITES_URL_SPEC,
+    VIEW_SLIDES_URL_SPEC,
 )
 from . import utils
 
@@ -43,7 +43,7 @@ class Session(properties.HasProperties):
         required=False,
     )
 
-    def __init__(self, api_key, endpoint=DEFAULT_ENDPOINT, source=None):
+    def __init__(self, api_key, endpoint=DEFAUlT_URL_BASE, source=None):
         kwargs = {
             'api_key': api_key,
             'endpoint': endpoint,
@@ -51,7 +51,7 @@ class Session(properties.HasProperties):
         if source is not None:
             kwargs.update({'source': source})
         super(Session, self).__init__(**kwargs)
-        resp = self.session.get(url=USER_ENDPOINT.format(base=self.endpoint))
+        resp = self.session.get(url=USER_URL_SPEC.format(base=self.endpoint))
         if not resp.ok:
             raise ValueError('Invalid api key or endpoint')
         self.org = resp.json()['uid']
@@ -82,7 +82,7 @@ class Session(properties.HasProperties):
     def _validate_org_proj(self):
         """Ensure the Session organization and project are valid"""
         resp = self.session.get(
-            url=PROJECT_UID_ENDPOINT.format(
+            url=PROJECT_UID_URL_SPEC.format(
                 base=self.endpoint,
                 org=self.org,
                 project=self.project,
@@ -111,7 +111,7 @@ class Session(properties.HasProperties):
             'description': description or '',
         }
         resp = self.session.post(
-            ORG_ENDPOINT.format(base=self.endpoint),
+            ORG_URL_SPEC.format(base=self.endpoint),
             json=json_dict,
         )
         if not resp.ok:
@@ -132,7 +132,7 @@ class Session(properties.HasProperties):
             'description': description or '',
         }
         resp = self.session.post(
-            PROJECT_ENDPOINT.format(
+            PROJECT_URL_SPEC.format(
                 base=self.endpoint,
                 org=self.org,
             ),
@@ -171,7 +171,7 @@ class Session(properties.HasProperties):
         if send_email:
             json_dict.update({'message': message})
         resp = self.session.post(
-            VIEW_INVITES_ENDPOINT.format(view_url=view_url),
+            VIEW_INVITES_URL_SPEC.format(view_url=view_url),
             json=json_dict,
         )
         if not resp.ok:
@@ -265,7 +265,7 @@ class Session(properties.HasProperties):
                     verbose=verbose,
                     chunk_size=chunk_size,
                     json_dict=json_dict,
-                    post_url=PROJECT_UPLOAD_ENDPOINT,
+                    post_url=PROJECT_UPLOAD_URL_SPEC,
                     file_resp_futures=file_resp_futures,
                     executor=_executor,
                 )
@@ -321,7 +321,7 @@ class Session(properties.HasProperties):
                 view_url = utils.convert_url_project_to_view(view_url)
             if not utils.match_url_view(view_url):
                 raise ValueError('view_url is invalid: {}'.format(view_url))
-            post_url = VIEW_SLIDES_ENDPOINT.format(view_url=view_url)
+            post_url = VIEW_SLIDES_URL_SPEC.format(view_url=view_url)
         else:
             post_url = None
         if verbose:
