@@ -21,7 +21,7 @@ with open('README.rst') as f:
 
 setuptools.setup(
     name='lfview-api-client',
-    version='0.0.2',
+    version='0.0.3',
     packages=setuptools.find_packages(exclude=('tests',)),
     install_requires=[
         'requests',
