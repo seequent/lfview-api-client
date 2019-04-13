@@ -33,11 +33,11 @@ def test_session(session):
     assert session.project == 'default'
     assert session.headers == {
         'Authorization': 'bearer my_key',
-        'Source': 'Python API Client v0.0.2',
+        'Source': 'Python API Client v0.0.3',
     }
     assert isinstance(session.session, requests.Session)
     assert session.session.headers['Authorization'] == 'bearer my_key'
-    assert session.session.headers['Source'] == 'Python API Client v0.0.2'
+    assert session.session.headers['Source'] == 'Python API Client v0.0.3'
     del session.source
     assert session.headers == {'Authorization': 'bearer my_key'}
     assert session.session.headers['Authorization'] == 'bearer my_key'

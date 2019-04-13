@@ -25,7 +25,7 @@ except ImportError:
     Future = utils.SynchronousFuture
     PARALLEL = False
 
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 
 class Session(properties.HasProperties):
@@ -248,7 +248,7 @@ class Session(properties.HasProperties):
                     # Finalize processing after uploads are complete
                     if future_url and future_url.done():
                         utils.process_uploaded_resource(
-                            res, future_url.result()
+                            res, future_url.result(), verbose, False
                         )
                         continue
                     # If we get to this point, there is still work to do
@@ -275,6 +275,9 @@ class Session(properties.HasProperties):
                         file_resp_futures=file_resp_futures,
                         executor=executor,
                     )
+                if uploads_complete:
+                    break
+            while file_resp_futures:
                 # This raises an error if an async file upload failed
                 for value in [_ for _ in file_resp_futures]:
                     if not value.done():
@@ -284,12 +287,17 @@ class Session(properties.HasProperties):
                     if not resp.ok:
                         raise ValueError(resp.text)
                     file_resp_futures.remove(value)
-                if uploads_complete:
-                    break
+                    if verbose:
+                        utils.log(
+                            'Finishing binary uploads - '
+                            '{} files remaining'.format(
+                                len(file_resp_futures)
+                            ),
+                            final=not file_resp_futures,
+                            total_length=90
+                        )
         finally:
             executor.shutdown(wait=True)
-        if verbose:
-            utils.log('Upload complete')
         return resource._url
 
     def upload_slide(
@@ -357,8 +365,7 @@ class Session(properties.HasProperties):
             post_url=post_url,
             executor=utils.SynchronousExecutor(),
         )
-        if verbose:
-            print('')
+        utils.process_uploaded_resource(slide, output_url, verbose)
         return output_url
 
     def upload_feedback(self, feedback, slide_url=None, verbose=True):
@@ -401,8 +408,7 @@ class Session(properties.HasProperties):
             post_url=post_url,
             executor=utils.SynchronousExecutor(),
         )
-        if verbose:
-            print('')
+        utils.process_uploaded_resource(feedback, output_url, verbose)
         return output_url
 
     def _upload(
@@ -451,8 +457,6 @@ class Session(properties.HasProperties):
             'session': self.session,
         }
         if isinstance(resource, files.Array) and resource.array is not None:
-            if verbose:
-                utils.log('   Array upload of {}'.format(resource), False)
             file_resp = executor.submit(
                 utils.upload_array,
                 arr=resource.array,
@@ -460,8 +464,6 @@ class Session(properties.HasProperties):
                 **file_kwargs
             )
         elif isinstance(resource, files.Image) and resource.image is not None:
-            if verbose:
-                utils.log('   Image upload of {}'.format(resource), False)
             file_resp = executor.submit(
                 utils.upload_image,
                 img=resource.image,
@@ -473,21 +475,19 @@ class Session(properties.HasProperties):
         thumbnail = getattr(resource, '_thumbnail', None)
         if thumbnail and 'thumbnail' in resp.json()['links']:
             thumbnail_file = files.Thumbnail(thumbnail)
-            if verbose:
-                utils.log('   Thumb upload of {}'.format(resource), False)
             thumbnail_resp = self.session.put(
                 resp.json()['links']['thumbnail'],
                 json=thumbnail_file.serialize(include_class=False),
             )
             if thumbnail_resp.ok:
-                executor.submit(
+                file_resp = executor.submit(
                     utils.upload_image,
                     img=thumbnail_file.image,
                     url=thumbnail_resp.json()['links']['location'],
                     **file_kwargs
                 )
-        if verbose:
-            utils.log('Finished upload of {}'.format(resource), False)
+                if file_resp_futures is not None:
+                    file_resp_futures.append(file_resp)
         return resp.json()['links']['self']
 
     def download(
