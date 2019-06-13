@@ -208,7 +208,11 @@ def test_upload(
                     },
                     'opacity': {
                         'value': 1
-                    }
+                    },
+                    'size': {
+                        'value': 10
+                    },
+                    'shape': 'square'
                 },
             ),
             'https://example.com/api/my_element',
@@ -323,7 +327,11 @@ def test_upload(
                         },
                         'opacity': {
                             'value': 1
-                        }
+                        },
+                        'size': {
+                            'value': 10
+                        },
+                        'shape': 'square'
                     },
                 },
             ),
