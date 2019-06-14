@@ -33,11 +33,11 @@ def test_session(session):
     assert session.project == 'default'
     assert session.headers == {
         'Authorization': 'bearer my_key',
-        'Source': 'Python API Client v0.0.3',
+        'Source': 'Python API Client v0.0.4b0',
     }
     assert isinstance(session.session, requests.Session)
     assert session.session.headers['Authorization'] == 'bearer my_key'
-    assert session.session.headers['Source'] == 'Python API Client v0.0.3'
+    assert session.session.headers['Source'] == 'Python API Client v0.0.4b0'
     del session.source
     assert session.headers == {'Authorization': 'bearer my_key'}
     assert session.session.headers['Authorization'] == 'bearer my_key'
@@ -208,7 +208,11 @@ def test_upload(
                     },
                     'opacity': {
                         'value': 1
-                    }
+                    },
+                    'size': {
+                        'value': 10
+                    },
+                    'shape': 'square'
                 },
             ),
             'https://example.com/api/my_element',
@@ -323,7 +327,11 @@ def test_upload(
                         },
                         'opacity': {
                             'value': 1
-                        }
+                        },
+                        'size': {
+                            'value': 10
+                        },
+                        'shape': 'square'
                     },
                 },
             ),
