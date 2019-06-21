@@ -27,7 +27,7 @@ setuptools.setup(
         'requests',
         'properties[full]>=0.5.6',
         'lfview-resources-files==0.0.2',
-        'lfview-resources-spatial==0.0.3',
+        'lfview-resources-spatial==0.0.4b0',
         'lfview-resources-manifests==0.0.1',
         'lfview-resources-scene==0.0.1',
         'futures; python_version == "2.7"'
