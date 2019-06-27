@@ -48,25 +48,25 @@ def test_upload_array(mock_upload_chunk, mock_session_class):
     mock_upload_chunk.return_value = mock_res
     mock_session = mock.MagicMock()
     mock_session_class.return_value = mock_session
-    arr = np.ones(CHUNK_SIZE // 8 + 1).astype('float64')
+    arr = np.ones(CHUNK_SIZE // 8 + 1).astype('float64').tobytes()
     res = utils.upload_array(arr, 'https://example.com')
     mock_upload_chunk.assert_has_calls(
         [
             mock.call(
                 url='https://example.com',
-                dat=arr.tobytes()[0:CHUNK_SIZE],
+                dat=arr[0:CHUNK_SIZE],
                 start=0,
                 stop=CHUNK_SIZE,
-                total=arr.nbytes,
+                total=len(arr),
                 content_type='application/octet-stream',
                 session=mock_session,
             ),
             mock.call(
                 url='https://example.com',
-                dat=arr.tobytes()[CHUNK_SIZE:arr.nbytes],
+                dat=arr[CHUNK_SIZE:len(arr)],
                 start=CHUNK_SIZE,
-                stop=arr.nbytes,
-                total=arr.nbytes,
+                stop=len(arr),
+                total=len(arr),
                 content_type='application/octet-stream',
                 session=mock_session,
             ),

@@ -17,6 +17,7 @@ from .constants import (
     VIEW_SLIDES_URL_SPEC,
 )
 from . import utils
+import zlib
 
 try:
     from concurrent.futures import Future
@@ -428,6 +429,12 @@ class Session(properties.HasProperties):
         """
         if verbose:
             utils.log('Starting upload of {}'.format(resource), False)
+
+        if isinstance(resource, files.Array):
+            compressed_arr = _compress_bytes(resource.array.tobytes())
+            json_dict['content_length'] = len(compressed_arr)
+            json_dict['content_encoding'] = 'gzip'
+
         if not getattr(resource, '_url', None):
             resp = self.session.post(
                 post_url.format(
@@ -459,7 +466,7 @@ class Session(properties.HasProperties):
         if isinstance(resource, files.Array) and resource.array is not None:
             file_resp = executor.submit(
                 utils.upload_array,
-                arr=resource.array,
+                arr=compressed_arr,
                 url=resp.json()['links']['location'],
                 **file_kwargs
             )
@@ -705,3 +712,9 @@ class Session(properties.HasProperties):
             raise ValueError('Failed to delete: {}'.format(url))
         if getattr(resource, '_url', None):
             resource.url = None
+
+
+def _compress_bytes(arr_bytes):
+    compress_obj = zlib.compressobj(9, zlib.DEFLATED, 31)
+    compressed_arr = compress_obj.compress(arr_bytes) + compress_obj.flush()
+    return compressed_arr

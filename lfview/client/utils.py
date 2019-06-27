@@ -40,15 +40,15 @@ def upload_chunk(url, dat, start, stop, total, content_type, session):
 
 def upload_array(arr, url, chunk_size=CHUNK_SIZE, session=None):
     """Upload an array to specified URL"""
-    length = arr.nbytes
-    arr_bytes = arr.tobytes()
+    length = len(arr)
+
     if not session:
         session = requests.Session()
     for start in range(0, length, chunk_size):
         stop = min(start + chunk_size, length)
         res = upload_chunk(
             url=url,
-            dat=arr_bytes[start:stop],
+            dat=arr[start:stop],
             start=start,
             stop=stop,
             total=length,
