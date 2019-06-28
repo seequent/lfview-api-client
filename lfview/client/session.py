@@ -65,7 +65,10 @@ class Session(properties.HasProperties):
         """User session security headers for accessing the API"""
         if not self.api_key:
             raise ValueError('User not logged in - please set api_key')
-        headers = {'Authorization': 'bearer {}'.format(self.api_key)}
+        headers = {
+            'Authorization': 'bearer {}'.format(self.api_key),
+            'Accept-Encoding': 'gzip, deflate'
+        }
         if self.source:
             headers.update({'Source': self.source})
         return headers
