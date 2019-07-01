@@ -40,7 +40,10 @@ def test_session(session):
     assert session.session.headers['Authorization'] == 'bearer my_key'
     assert session.session.headers['Source'] == 'Python API Client v0.0.4b0'
     del session.source
-    assert session.headers == {'Authorization': 'bearer my_key', 'Accept-Encoding': 'gzip, deflate'}
+    assert session.headers == {
+        'Authorization': 'bearer my_key',
+        'Accept-Encoding': 'gzip, deflate'
+    }
     assert session.session.headers['Authorization'] == 'bearer my_key'
     assert 'source' not in session.session.headers
 
