@@ -28,7 +28,7 @@ except ImportError:
     Future = utils.SynchronousFuture
     PARALLEL = False
 
-__version__ = '0.0.4b0'
+__version__ = '0.0.4'
 
 
 class Session(properties.HasProperties):
