@@ -1,9 +1,13 @@
 """User session for logging in, uploading, downloading, etc"""
-from lfview.resources import files, manifests, scene, spatial
+import zlib
+
 import properties
 import requests
 from six import string_types
 
+from lfview.resources import files, manifests, scene, spatial
+
+from . import utils
 from .constants import (
     CHUNK_SIZE,
     DEFAUlT_URL_BASE,
@@ -16,8 +20,6 @@ from .constants import (
     VIEW_INVITES_URL_SPEC,
     VIEW_SLIDES_URL_SPEC,
 )
-from . import utils
-import zlib
 
 try:
     from concurrent.futures import Future
@@ -433,7 +435,7 @@ class Session(properties.HasProperties):
         if verbose:
             utils.log('Starting upload of {}'.format(resource), False)
 
-        if isinstance(resource, files.Array):
+        if isinstance(resource, files.Array) and resource.array is not None:
             compressed_arr = _compress_bytes(resource.array.tobytes())
             json_dict['content_length'] = len(compressed_arr)
             json_dict['content_encoding'] = 'gzip'

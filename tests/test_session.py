@@ -247,7 +247,6 @@ def test_upload(
     assert mock_put.call_count == 1
     assert mock_upload_array.call_count == 2
     assert mock_upload_image.call_count == 2
-    print(mock_post.calls)
     mock_post.assert_has_calls(
         [
             mock.call(
