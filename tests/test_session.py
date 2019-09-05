@@ -33,13 +33,17 @@ def test_session(session):
     assert session.project == 'default'
     assert session.headers == {
         'Authorization': 'bearer my_key',
-        'Source': 'Python API Client v0.0.4b0',
+        'Source': 'Python API Client v0.0.4',
+        'Accept-Encoding': 'gzip, deflate'
     }
     assert isinstance(session.session, requests.Session)
     assert session.session.headers['Authorization'] == 'bearer my_key'
-    assert session.session.headers['Source'] == 'Python API Client v0.0.4b0'
+    assert session.session.headers['Source'] == 'Python API Client v0.0.4'
     del session.source
-    assert session.headers == {'Authorization': 'bearer my_key'}
+    assert session.headers == {
+        'Authorization': 'bearer my_key',
+        'Accept-Encoding': 'gzip, deflate'
+    }
     assert session.session.headers['Authorization'] == 'bearer my_key'
     assert 'source' not in session.session.headers
 
@@ -251,7 +255,8 @@ def test_upload(
                     'shape': [3, 3],
                     'dtype': 'Float64Array',
                     'content_type': 'application/octet-stream',
-                    'content_length': 72,
+                    'content_length': 31,
+                    'content_encoding': 'gzip'
                 },
             ),
             mock.call(
@@ -260,7 +265,8 @@ def test_upload(
                     'shape': [3],
                     'dtype': 'Float64Array',
                     'content_type': 'application/octet-stream',
-                    'content_length': 24,
+                    'content_length': 29,
+                    'content_encoding': 'gzip'
                 },
             ),
             mock.call(

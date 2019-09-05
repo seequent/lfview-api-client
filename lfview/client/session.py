@@ -1,9 +1,13 @@
 """User session for logging in, uploading, downloading, etc"""
-from lfview.resources import files, manifests, scene, spatial
+import zlib
+
 import properties
 import requests
 from six import string_types
 
+from lfview.resources import files, manifests, scene, spatial
+
+from . import utils
 from .constants import (
     CHUNK_SIZE,
     DEFAUlT_URL_BASE,
@@ -16,7 +20,6 @@ from .constants import (
     VIEW_INVITES_URL_SPEC,
     VIEW_SLIDES_URL_SPEC,
 )
-from . import utils
 
 try:
     from concurrent.futures import Future
@@ -25,7 +28,7 @@ except ImportError:
     Future = utils.SynchronousFuture
     PARALLEL = False
 
-__version__ = '0.0.4b0'
+__version__ = '0.0.4'
 
 
 class Session(properties.HasProperties):
@@ -64,7 +67,10 @@ class Session(properties.HasProperties):
         """User session security headers for accessing the API"""
         if not self.api_key:
             raise ValueError('User not logged in - please set api_key')
-        headers = {'Authorization': 'bearer {}'.format(self.api_key)}
+        headers = {
+            'Authorization': 'bearer {}'.format(self.api_key),
+            'Accept-Encoding': 'gzip, deflate'
+        }
         if self.source:
             headers.update({'Source': self.source})
         return headers
@@ -428,6 +434,12 @@ class Session(properties.HasProperties):
         """
         if verbose:
             utils.log('Starting upload of {}'.format(resource), False)
+
+        if isinstance(resource, files.Array) and resource.array is not None:
+            compressed_arr = _compress_bytes(resource.array.tobytes())
+            json_dict['content_length'] = len(compressed_arr)
+            json_dict['content_encoding'] = 'gzip'
+
         if not getattr(resource, '_url', None):
             resp = self.session.post(
                 post_url.format(
@@ -459,7 +471,7 @@ class Session(properties.HasProperties):
         if isinstance(resource, files.Array) and resource.array is not None:
             file_resp = executor.submit(
                 utils.upload_array,
-                arr=resource.array,
+                arr=compressed_arr,
                 url=resp.json()['links']['location'],
                 **file_kwargs
             )
@@ -705,3 +717,9 @@ class Session(properties.HasProperties):
             raise ValueError('Failed to delete: {}'.format(url))
         if getattr(resource, '_url', None):
             resource.url = None
+
+
+def _compress_bytes(arr_bytes):
+    compress_obj = zlib.compressobj(9, zlib.DEFLATED, 31)
+    compressed_arr = compress_obj.compress(arr_bytes) + compress_obj.flush()
+    return compressed_arr
