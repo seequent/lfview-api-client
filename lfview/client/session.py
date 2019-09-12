@@ -28,7 +28,7 @@ except ImportError:
     Future = utils.SynchronousFuture
     PARALLEL = False
 
-__version__ = '0.0.4'
+__version__ = '0.0.5'
 
 
 class Session(properties.HasProperties):
@@ -432,7 +432,6 @@ class Session(properties.HasProperties):
         Use :code:`upload`, :code:`upload_slide`, or :code:`upload_feedback`
         instead.
         """
-        is_compressed = False
         if verbose:
             utils.log('Starting upload of {}'.format(resource), False)
 
@@ -446,6 +445,7 @@ class Session(properties.HasProperties):
                 json_dict['content_encoding'] = 'gzip'
                 data_to_upload = compressed_arr
             else:
+                # for uncompressed data our server expects no `content_encoding` value.
                 json_dict['content_length'] = len(raw_array)
                 data_to_upload = raw_array
 
