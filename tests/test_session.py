@@ -247,6 +247,7 @@ def test_upload(
     assert mock_put.call_count == 1
     assert mock_upload_array.call_count == 2
     assert mock_upload_image.call_count == 2
+
     mock_post.assert_has_calls(
         [
             mock.call(
@@ -265,8 +266,7 @@ def test_upload(
                     'shape': [3],
                     'dtype': 'Float64Array',
                     'content_type': 'application/octet-stream',
-                    'content_length': 29,
-                    'content_encoding': 'gzip'
+                    'content_length': 24,  # this file is 29 bytes when compressed
                 },
             ),
             mock.call(

@@ -432,13 +432,22 @@ class Session(properties.HasProperties):
         Use :code:`upload`, :code:`upload_slide`, or :code:`upload_feedback`
         instead.
         """
+        is_compressed = False
         if verbose:
             utils.log('Starting upload of {}'.format(resource), False)
 
         if isinstance(resource, files.Array) and resource.array is not None:
-            compressed_arr = _compress_bytes(resource.array.tobytes())
-            json_dict['content_length'] = len(compressed_arr)
-            json_dict['content_encoding'] = 'gzip'
+            raw_array = resource.array.tobytes()
+            compressed_arr = _compress_bytes(raw_array)
+            data_to_upload = None
+            # only set compressed data if the data is smaller
+            if len(compressed_arr) < len(raw_array):
+                json_dict['content_length'] = len(compressed_arr)
+                json_dict['content_encoding'] = 'gzip'
+                data_to_upload = compressed_arr
+            else:
+                json_dict['content_length'] = len(raw_array)
+                data_to_upload = raw_array
 
         if not getattr(resource, '_url', None):
             resp = self.session.post(
@@ -471,7 +480,7 @@ class Session(properties.HasProperties):
         if isinstance(resource, files.Array) and resource.array is not None:
             file_resp = executor.submit(
                 utils.upload_array,
-                arr=compressed_arr,
+                arr=data_to_upload,
                 url=resp.json()['links']['location'],
                 **file_kwargs
             )
