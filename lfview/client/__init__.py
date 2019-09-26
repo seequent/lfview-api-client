@@ -1,2 +1,3 @@
 """Python client for interacting with the LF View API"""
-from .session import Session, __version__
+from .constants import __version__
+from .session import Session, UploadSession

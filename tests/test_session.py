@@ -19,26 +19,43 @@ from lfview.resources import files, manifests, spatial, scene
 
 
 @pytest.fixture()
+@mock.patch('lfview.client.session.requests.get')
 @mock.patch('lfview.client.session.requests.Session.get')
-def session(mock_get):
-    mock_resp = mock.MagicMock()
-    mock_get.return_value = mock_resp
-    mock_resp.json.return_value = {'uid': 'mock_uid'}
-    mock_resp.ok = True
+def session(mock_session_get, mock_get):
+    mock_get_resp = mock.MagicMock()
+    mock_get.return_value = mock_get_resp
+    mock_get_resp.json.return_value = {
+        'upload_api_url_spec': '{upload_base_url}/{base_type}{type_delimiter}{sub_type}',
+        'user_api_url': 'https://example.com/api/v1/user',
+    }
+    mock_get_resp.ok = True
+    mock_session_get_resp = mock.MagicMock()
+    mock_session_get.return_value = mock_session_get_resp
+    mock_session_get_resp.json.return_value = {
+        'accepted_terms': True,
+        'links': {
+            'default_upload_location': 'https://example.com/api/v1/project/myorg/myproj'
+        },
+    }
+    mock_session_get_resp.ok = True
     return Session(api_key='my_key', endpoint='https://example.com')
 
 
 def test_session(session):
-    assert session.org == 'mock_uid'
-    assert session.project == 'default'
+    assert session.service == 'https://example.com'
+    assert session.api_key == 'my_key'
+    assert session.client_version == 'View API Python Client v0.0.5'
+    assert session.source == 'View API Python Client v0.0.5'
+    assert session.upload_base_url == 'https://example.com/api/v1/project/myorg/myproj'
+    assert session.upload_api_url_spec == '{upload_base_url}/{base_type}{type_delimiter}{sub_type}'
     assert session.headers == {
         'Authorization': 'bearer my_key',
-        'Source': 'Python API Client v0.0.5',
+        'Source': 'View API Python Client v0.0.5',
         'Accept-Encoding': 'gzip, deflate'
     }
     assert isinstance(session.session, requests.Session)
     assert session.session.headers['Authorization'] == 'bearer my_key'
-    assert session.session.headers['Source'] == 'Python API Client v0.0.5'
+    assert session.session.headers['Source'] == 'View API Python Client v0.0.5'
     del session.source
     assert session.headers == {
         'Authorization': 'bearer my_key',
@@ -48,56 +65,31 @@ def test_session(session):
     assert 'source' not in session.session.headers
 
 
+@mock.patch('lfview.client.session.requests.Session.get')
 @mock.patch('lfview.client.session.requests.Session.post')
-def test_create_org(mock_post, session):
+def test_invite(mock_post, mock_get, session):
     mock_resp = mock.MagicMock()
     mock_post.return_value = mock_resp
     mock_resp.json.return_value = {}
     mock_resp.ok = True
-    session._create_org('myorg', name='My Org')
-    mock_post.assert_called_once_with(
-        'https://example.com/api/v1/orgs',
-        json={
-            'slug': 'myorg',
-            'name': 'My Org',
-            'description': '',
+    mock_get_resp = mock.MagicMock()
+    mock_get.return_value = mock_get_resp
+    mock_get_resp.json.return_value = {
+        'links': {
+            'invites': 'https://example.com/api/v1/view/myorg/myproj/abc123/invites',
         },
-    )
-
-
-@mock.patch('lfview.client.session.requests.Session.post')
-def test_create_project(mock_post, session):
-    mock_resp = mock.MagicMock()
-    mock_post.return_value = mock_resp
-    mock_resp.json.return_value = {}
-    mock_resp.ok = True
-    session._create_project('myproj', description='My Project')
-    mock_post.assert_called_once_with(
-        'https://example.com/api/v1/orgs/mock_uid/projects',
-        json={
-            'slug': 'myproj',
-            'name': '',
-            'description': 'My Project',
-        },
-    )
-
-
-@mock.patch('lfview.client.session.requests.Session.post')
-def test_invite(mock_post, session):
-    mock_resp = mock.MagicMock()
-    mock_post.return_value = mock_resp
-    mock_resp.json.return_value = {}
-    mock_resp.ok = True
-    view_url = 'https://example.com/api/v1/view/mock_uid/default/abc123'
+    }
+    mock_get_resp.ok = True
+    view_url = 'https://example.com/api/v1/view/myorg/myproj/abc123'
     with pytest.raises(ValueError):
         session.invite_to_view(
-            view_url=view_url,
+            view=view_url,
             email='example@example.com',
             role='org.owner',
             send_email=False,
         )
     session.invite_to_view(
-        view_url=view_url,
+        view=view_url,
         email='example@example.com',
         role='view.editor',
         send_email=False,
@@ -112,7 +104,7 @@ def test_invite(mock_post, session):
         },
     )
     session.invite_to_view(
-        view_url=view_url,
+        view=view_url,
         email='example@example.com',
         role='view.spectator',
         send_email=True,
@@ -167,7 +159,7 @@ def test_upload(
         end_inclusive=[True, True],
         visibility=[True, True, True],
     )
-    mapping_uploaded._url = 'https://example.com/api/mapping_uploaded'
+    mapping_uploaded._links = {'self': 'https://example.com/api/mapping_uploaded'}
     array_data = files.Array([0., 10, 20])
     img = io.BytesIO()
     s = [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]]
@@ -251,7 +243,7 @@ def test_upload(
     mock_post.assert_has_calls(
         [
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/files/array',
+                'https://example.com/api/v1/project/myorg/myproj/files/array',
                 json={
                     'shape': [3, 3],
                     'dtype': 'Float64Array',
@@ -261,7 +253,7 @@ def test_upload(
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/files/array',
+                'https://example.com/api/v1/project/myorg/myproj/files/array',
                 json={
                     'shape': [3],
                     'dtype': 'Float64Array',
@@ -270,14 +262,14 @@ def test_upload(
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/files/image',
+                'https://example.com/api/v1/project/myorg/myproj/files/image',
                 json={
                     'content_type': 'image/png',
                     'content_length': img.seek(0, 2),
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/mappings/continuous',
+                'https://example.com/api/v1/project/myorg/myproj/mappings/continuous',
                 json={
                     'gradient': 'https://example.com/api/my_colormap',
                     'data_controls': [0., 10., 20., 30.],
@@ -287,7 +279,7 @@ def test_upload(
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/data/basic',
+                'https://example.com/api/v1/project/myorg/myproj/data/basic',
                 json={
                     'name': 'Dataset 1',
                     'location': 'nodes',
@@ -296,7 +288,7 @@ def test_upload(
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/data/basic',
+                'https://example.com/api/v1/project/myorg/myproj/data/basic',
                 json={
                     'name': 'Dataset 2',
                     'description': 'Same array as dataset 1',
@@ -309,7 +301,7 @@ def test_upload(
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/textures/projection',
+                'https://example.com/api/v1/project/myorg/myproj/textures/projection',
                 json={
                     'origin': [0., 0, 0],
                     'axis_u': [1., 0, 0],
@@ -318,7 +310,7 @@ def test_upload(
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/elements/pointset',
+                'https://example.com/api/v1/project/myorg/myproj/elements/pointset',
                 json={
                     'vertices': 'https://example.com/api/self',
                     'data': [
@@ -342,7 +334,7 @@ def test_upload(
                 },
             ),
             mock.call(
-                'https://example.com/api/v1/project/mock_uid/default/views',
+                'https://example.com/api/v1/project/myorg/myproj/views',
                 json={
                     'name': 'Test View',
                     'elements': [
@@ -405,7 +397,11 @@ def test_upload_slide(
     mock_executor = mock.MagicMock()
     mock_executor_class.return_value = mock_executor
     mock_extra_validation.return_value = True
-    mock_view = mock.MagicMock(elements=[])
+    mock_view = manifests.View()
+    mock_view._links = {
+        'self': 'https://example.com/api/v1/view/org1/proj1/view1',
+        'slides': 'https://example.com/api/v1/view/org1/proj1/view1/slides',
+    }
     mock_download.return_value = mock_view
     slide_dict = {
         'scene': {
@@ -430,16 +426,17 @@ def test_upload_slide(
     }
     slide = scene.Slide(**slide_dict)
     if not view_url:
-        slide._url = (
-            'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1'
-        )
+        slide._links = {
+            'self': 'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1',
+            'view': 'https://example.com/api/v1/view/org1/proj1/view1',
+        }
     expected_json_dict = slide_dict.copy()
     expected_json_dict.pop('uid')
     expected_post_url = (
         'https://example.com/api/v1/view/org1/proj1/view1/slides'
         if view_url else None
     )
-    session.upload_slide(slide, view_url=view_url, verbose=verbose)
+    session.upload_slide(slide, view=view_url, verbose=verbose)
     mock_upload.assert_called_once_with(
         resource=slide,
         verbose=verbose,
@@ -486,7 +483,7 @@ def test_bad_upload_slide(slide, view_url, verbose, session):
         }
         slide = scene.Slide(**slide_dict)
     with pytest.raises(ValueError):
-        session.upload_slide(slide, view_url=view_url, verbose=verbose)
+        session.upload_slide(slide, view=view_url, verbose=verbose)
 
 
 @pytest.mark.parametrize(
@@ -504,16 +501,24 @@ def test_bad_upload_slide(slide, view_url, verbose, session):
 )
 @pytest.mark.parametrize('verbose', [True, False])
 @mock.patch('lfview.client.session.Session._upload')
+@mock.patch('lfview.client.session.Session.download')
 @mock.patch('lfview.client.utils.SynchronousExecutor')
 def test_upload_feedback(
-        mock_executor_class, mock_upload, feedback, slide_url, verbose, session
+        mock_executor_class, mock_download, mock_upload, feedback, slide_url, verbose, session
 ):
     mock_executor = mock.MagicMock()
     mock_executor_class.return_value = mock_executor
+    mock_slide = scene.Slide()
+    mock_slide._links = {
+        'self': 'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1',
+        'view': 'https://example.com/api/v1/view/org1/proj1/view1',
+        'feedback': 'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1/feedback',
+    }
+    mock_download.return_value = mock_slide
     if isinstance(feedback, scene.Feedback) and not slide_url:
-        feedback._url = (
-            'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1/feedback/fb1'
-        )
+        feedback._links = {
+            'self': 'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1/feedback/fb1',
+        }
     expected_json_dict = {
         'comment': 'Some comment',
     }
@@ -521,7 +526,7 @@ def test_upload_feedback(
         'https://example.com/api/v1/view/org1/proj1/view1/slides/slide1/feedback'
         if slide_url else None
     )
-    session.upload_feedback(feedback, slide_url=slide_url, verbose=verbose)
+    session.upload_feedback(feedback, slide=slide_url, verbose=verbose)
     if isinstance(feedback, scene.Feedback):
         mock_upload.assert_called_once_with(
             resource=feedback,
@@ -553,7 +558,7 @@ def test_bad_upload_feedback(feedback, slide_url, verbose, session):
     if not feedback:
         feedback = scene.Feedback(comment='bad')
     with pytest.raises(ValueError):
-        session.upload_feedback(feedback, slide_url=slide_url, verbose=verbose)
+        session.upload_feedback(feedback, slide=slide_url, verbose=verbose)
 
 
 @pytest.fixture
@@ -590,6 +595,7 @@ def download_data():
         'axis_u': [1., 0, 0],
         'axis_v': [0., 1, 0],
         'image': 'https://example.com/api/v1/view/org/proj/viewuid/files/image/uid',
+        'links': {},
     }
     file_json = {
         'shape': [3, 3],
@@ -850,8 +856,8 @@ def test_app_url(mock_get, verbose, session):
 def test_delete(mock_delete, url, resp_ok, use_resource, session):
     mock_resp = mock.MagicMock(ok=resp_ok)
     mock_delete.return_value = mock_resp
-    if use_resource:
-        resource = mock.MagicMock(_url=url)
+    if use_resource and url:
+        resource = mock.MagicMock(_links={'self': url})
     else:
         resource = url
 
