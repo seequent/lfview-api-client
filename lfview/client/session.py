@@ -25,7 +25,11 @@ except ImportError:
 
 
 class UploadSession(properties.HasProperties):
-    """User session object for performing API calls"""
+    """User session object for uploading data through the View API
+
+    This class will likely be future-compatible with changes to
+    the API.
+    """
     api_key = properties.String('LF View API Key')
     service = properties.String('Base API service', required=False)
     client_version = properties.String(
