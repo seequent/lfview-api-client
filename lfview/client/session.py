@@ -44,7 +44,14 @@ class UploadSession(properties.HasProperties):
         'Format string spec to build upload URL',
     )
 
-    def __init__(self, api_key, service=None, source=None, client_version=None, endpoint=None):
+    def __init__(
+            self,
+            api_key,
+            service=None,
+            source=None,
+            client_version=None,
+            endpoint=None
+    ):
         kwargs = {
             'api_key': api_key,
         }
@@ -58,9 +65,7 @@ class UploadSession(properties.HasProperties):
 
         # Connect to API discovery service
         parsed_endpoint = urlparse(DISCOVERY_ENDPOINT)
-        query = {
-            'client_version': self.client_version
-        }
+        query = {'client_version': self.client_version}
         if self.service:
             query.update({'service': self.service})
         query_string = urlencode(query)
@@ -459,9 +464,7 @@ class Session(UploadSession):
                 )
             )
         if not slide and not getattr(feedback, '_links', None):
-            raise ValueError(
-                'slide must be specified to upload new feedback'
-            )
+            raise ValueError('slide must be specified to upload new feedback')
         if isinstance(slide, string_types):
             slide = self.download(url=slide, recursive=False)
         if slide:

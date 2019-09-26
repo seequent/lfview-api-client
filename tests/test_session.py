@@ -55,7 +55,8 @@ def test_session(session):
     }
     assert isinstance(session.session, requests.Session)
     assert session.session.headers['Authorization'] == 'bearer my_key'
-    assert session.session.headers['Source'] == 'View API Python Client v0.0.6b0'
+    assert session.session.headers['Source'
+                                   ] == 'View API Python Client v0.0.6b0'
     del session.source
     assert session.headers == {
         'Authorization': 'bearer my_key',
@@ -159,7 +160,9 @@ def test_upload(
         end_inclusive=[True, True],
         visibility=[True, True, True],
     )
-    mapping_uploaded._links = {'self': 'https://example.com/api/mapping_uploaded'}
+    mapping_uploaded._links = {
+        'self': 'https://example.com/api/mapping_uploaded'
+    }
     array_data = files.Array([0., 10, 20])
     img = io.BytesIO()
     s = [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]]
@@ -504,7 +507,8 @@ def test_bad_upload_slide(slide, view_url, verbose, session):
 @mock.patch('lfview.client.session.Session.download')
 @mock.patch('lfview.client.utils.SynchronousExecutor')
 def test_upload_feedback(
-        mock_executor_class, mock_download, mock_upload, feedback, slide_url, verbose, session
+        mock_executor_class, mock_download, mock_upload, feedback, slide_url,
+        verbose, session
 ):
     mock_executor = mock.MagicMock()
     mock_executor_class.return_value = mock_executor

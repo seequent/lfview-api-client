@@ -160,7 +160,9 @@ def test_upload(
         end_inclusive=[True, True],
         visibility=[True, True, True],
     )
-    mapping_uploaded._links = {'self': 'https://example.com/api/mapping_uploaded'}
+    mapping_uploaded._links = {
+        'self': 'https://example.com/api/mapping_uploaded'
+    }
     array_data = files.Array([0., 10, 20])
     img = io.BytesIO()
     s = [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]]

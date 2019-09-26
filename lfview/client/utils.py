@@ -245,7 +245,6 @@ def build_resource_from_json(url, resource_json, copy):
             and 'elements' not in resource_json):
         resource.elements = [
             item for item in resource.contents if '/elements/' in item
-
         ]
     if isinstance(resource, files.base._BaseFile):
         file_resp = resource_json['links']['location']
