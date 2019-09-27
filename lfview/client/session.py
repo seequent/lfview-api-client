@@ -4,21 +4,16 @@ import zlib
 import properties
 import requests
 from six import string_types
+from six.moves.urllib_parse import urlencode, urlparse, urlunparse
 
 from lfview.resources import files, manifests, scene, spatial
 
 from . import utils
 from .constants import (
     CHUNK_SIZE,
-    DEFAUlT_URL_BASE,
+    DEFAULT_CLIENT_VERSION,
+    DISCOVERY_ENDPOINT,
     IGNORED_PROPS,
-    ORG_URL_SPEC,
-    PROJECT_URL_SPEC,
-    PROJECT_UID_URL_SPEC,
-    PROJECT_UPLOAD_URL_SPEC,
-    USER_URL_SPEC,
-    VIEW_INVITES_URL_SPEC,
-    VIEW_SLIDES_URL_SPEC,
 )
 
 try:
@@ -28,38 +23,74 @@ except ImportError:
     Future = utils.SynchronousFuture
     PARALLEL = False
 
-__version__ = '0.0.5'
 
+class UploadSession(properties.HasProperties):
+    """User session object for uploading data through the View API
 
-class Session(properties.HasProperties):
-    """User session object for performing API calls"""
+    This class will likely be future-compatible with changes to
+    the API.
+    """
     api_key = properties.String('LF View API Key')
-    endpoint = properties.String('Base API endpoint')
-    org = properties.String(
-        'Single-user organization, set implicitly on Session creation'
-    )
-    project = properties.String(
-        'Default project of the user, set implicitly on Session creation'
+    service = properties.String('Base API service', required=False)
+    client_version = properties.String(
+        'Information about the API client',
+        default=DEFAULT_CLIENT_VERSION,
     )
     source = properties.String(
         'Provenance information for uploaded data',
-        default='Python API Client v{}'.format(__version__),
-        required=False,
+        default=DEFAULT_CLIENT_VERSION,
+    )
+    upload_base_url = properties.String(
+        'URL for the default project of the user, discovered implicitly '
+        'from the API',
+    )
+    upload_api_url_spec = properties.String(
+        'Format string spec to build upload URL',
     )
 
-    def __init__(self, api_key, endpoint=DEFAUlT_URL_BASE, source=None):
+    def __init__(
+            self,
+            api_key,
+            service=None,
+            source=None,
+            client_version=None,
+            endpoint=None
+    ):
         kwargs = {
             'api_key': api_key,
-            'endpoint': endpoint,
         }
-        if source is not None:
-            kwargs.update({'source': source})
-        super(Session, self).__init__(**kwargs)
-        resp = self.session.get(url=USER_URL_SPEC.format(base=self.endpoint))
-        if not resp.ok:
-            raise ValueError('Invalid api key or endpoint')
-        self.org = resp.json()['uid']
-        self.project = 'default'
+        if service or endpoint:
+            kwargs.update({'service': service or endpoint})
+        if source or client_version:
+            kwargs.update({'source': source or client_version})
+        if client_version:
+            kwargs.update({'client_version': client_version})
+        super(UploadSession, self).__init__(**kwargs)
+
+        # Connect to API discovery service
+        parsed_endpoint = urlparse(DISCOVERY_ENDPOINT)
+        query = {'client_version': self.client_version}
+        if self.service:
+            query.update({'service': self.service})
+        query_string = urlencode(query)
+        discovery_url = urlunparse(parsed_endpoint[:4] + (query_string, ''))
+        endpoints_resp = requests.get(discovery_url)
+        if not endpoints_resp.ok:
+            raise ValueError('Unable to connect to Seequent API')
+        endpoints = endpoints_resp.json()
+        self.upload_api_url_spec = endpoints['upload_api_url_spec']
+        user_endpoint = endpoints['user_api_url']
+
+        # Get User information and validate API key
+        user_resp = self.session.get(user_endpoint)
+        if user_resp.status_code in (401, 403):
+            raise ValueError('Invalid api key')
+        elif not user_resp.ok:
+            raise ValueError('Unable to connect to Seequent API')
+        user = user_resp.json()
+        if not user.get('accepted_terms'):
+            raise ValueError('Please accept terms online')
+        self.upload_base_url = user['links']['default_upload_location']
         self.validate()
 
     @properties.Dictionary('Headers to authenticate the user for API access')
@@ -85,21 +116,6 @@ class Session(properties.HasProperties):
             self._session.headers.update(self.headers)
         return self._session
 
-    @properties.validator
-    def _validate_org_proj(self):
-        """Ensure the Session organization and project are valid"""
-        resp = self.session.get(
-            url=PROJECT_UID_URL_SPEC.format(
-                base=self.endpoint,
-                org=self.org,
-                project=self.project,
-            ),
-        )
-        if not resp.ok:
-            raise ValueError(
-                'Invalid org/project {}/{}'.format(self.org, self.project)
-            )
-
     @properties.observer(['api_key', 'source'])
     def _update_requests_session(self, change):
         if getattr(self, '_session', None):
@@ -107,67 +123,20 @@ class Session(properties.HasProperties):
                 self._session.headers.pop('source', None)
             self._session.headers.update(self.headers)
 
-    def _create_org(self, org, name=None, description=None):
-        """Allows logged in user to create an organization
-
-        Currently this action is not enabled in the LF View API.
-        """
-        json_dict = {
-            'slug': org,
-            'name': name or '',
-            'description': description or '',
-        }
-        resp = self.session.post(
-            ORG_URL_SPEC.format(base=self.endpoint),
-            json=json_dict,
-        )
-        if not resp.ok:
-            raise ValueError(resp.text)
-        self.org = org
-        return resp.json()
-
-    def _create_project(self, project, name=None, description=None):
-        """Allows logged in user to create an project
-
-        Currently this action is not enabled in the LF View API.
-        """
-        if not self.org:
-            raise ValueError('No org specified')
-        json_dict = {
-            'slug': project,
-            'name': name or '',
-            'description': description or '',
-        }
-        resp = self.session.post(
-            PROJECT_URL_SPEC.format(
-                base=self.endpoint,
-                org=self.org,
-            ),
-            json=json_dict,
-        )
-        if not resp.ok:
-            raise ValueError(resp.text)
-        self.project = project
-        return resp.json()
-
     def invite_to_view(
-            self, view_url, email, role, send_email=False, message=None
+            self, view, email, role, send_email=False, message=None
     ):
         """Invite members to a View with their email
 
         **Parameters:**
 
-        * **view_url** - API URL of the
+        * **view** - View API URL or instance of
           :class:`lfview.resources.manifests.manifests.View`
         * **email** - email address of user to invite
         * **role** - role to assign, either 'view.editor' or 'view.spectator'
         * **send_email** - send email to invited user with link to the view
         * **message** - message to include in the email if send_email is True
         """
-        if not self.org:
-            raise ValueError('No org specified')
-        if not self.project:
-            raise ValueError('No project specified')
         if role not in ['view.editor', 'view.spectator']:
             raise ValueError('Role must be view.editor or view.spectator')
         json_dict = {
@@ -177,10 +146,11 @@ class Session(properties.HasProperties):
         }
         if send_email:
             json_dict.update({'message': message})
-        resp = self.session.post(
-            VIEW_INVITES_URL_SPEC.format(view_url=view_url),
-            json=json_dict,
-        )
+        if isinstance(view, string_types) and isinstance(self, Session):
+            view = self.download(view, recursive=False)
+        if not getattr(view, '_links', None):
+            raise ValueError('view must be an uploaded View instance')
+        resp = self.session.post(view._links['invites'], json=json_dict)
         if not resp.ok:
             raise ValueError(resp.text)
         return resp
@@ -230,9 +200,9 @@ class Session(properties.HasProperties):
                 'Invalid resource type {}'.format(resource.__class__.__name__)
             )
         if isinstance(resource, scene.Slide):
-            raise ValueError('Use upload_slide method for Slides')
+            raise ValueError('Use Session.upload_slide method for Slides')
         if isinstance(resource, scene.Feedback):
-            raise ValueError('Use upload_feedback method for Feedback')
+            raise ValueError('Use Session.upload_feedback method for Feedback')
         if not executor:
             executor = utils.get_default_executor(parallel, verbose, workers)
         resources_to_upload = utils.compute_children(resource)
@@ -250,16 +220,16 @@ class Session(properties.HasProperties):
                     # Skip resources that have already been uploaded
                     if utils.is_uploaded(res):
                         continue
-                    future_url = getattr(res, '_future_url', None)
+                    future_links = getattr(res, '_future_links', None)
                     # Finalize processing after uploads are complete
-                    if future_url and future_url.done():
+                    if future_links and future_links.done():
                         utils.process_uploaded_resource(
-                            res, future_url.result(), verbose, False
+                            res, future_links.result(), verbose, False
                         )
                         continue
                     # If we get to this point, there is still work to do
                     uploads_complete = False
-                    if future_url:
+                    if future_links:
                         continue
                     # Do not attempt to upload until all children are uploaded
                     children = utils.compute_children(res)
@@ -271,13 +241,20 @@ class Session(properties.HasProperties):
                         res.contents = utils.compute_children(res)
                     res.validate()
                     json_dict = utils.construct_upload_dict(res)
-                    res._future_url = executor.submit(
+                    res._future_links = executor.submit(
                         self._upload,
                         resource=res,
                         verbose=verbose,
                         chunk_size=chunk_size,
                         json_dict=json_dict,
-                        post_url=PROJECT_UPLOAD_URL_SPEC,
+                        post_url=self.upload_api_url_spec.format(
+                            upload_base_url=self.upload_base_url,
+                            base_type=res.BASE_TYPE,
+                            type_delimiter=(
+                                '/' if hasattr(res, 'SUB_TYPE') else ''
+                            ),
+                            sub_type=getattr(res, 'SUB_TYPE', ''),
+                        ),
                         file_resp_futures=file_resp_futures,
                         executor=executor,
                     )
@@ -304,118 +281,7 @@ class Session(properties.HasProperties):
                         )
         finally:
             executor.shutdown(wait=True)
-        return resource._url
-
-    def upload_slide(
-            self,
-            slide,
-            view_url=None,
-            verbose=False,
-            autofill_plane=True,
-            thumbnail=None,
-            chunk_size=CHUNK_SIZE,
-    ):
-        """Upload a Slide to a View
-
-        **Parameters:**
-
-        * **slide** - :class:`lfview.resources.scene.slide.Slide` object
-        * **view_url** - URL of the View to upload the slide to
-        * **verbose** - if True, print logging messages
-        * **autofill_plane** - if True (the default), the annotation drawing
-          plane is automatically filled in if not provided.
-        * **thumbnail** - image to upload as thumbnail for the slide; this
-          may also be updated in the web app.
-        * **chunk_size** - chunk size for thumbnail upload, must be a
-          multiple of 256 * 1024. By default, 20 MB (80 * 256 * 1024) is used.
-        """
-        if not isinstance(slide, scene.Slide):
-            raise ValueError(
-                'upload_slide input must be Slide, not {}'.format(
-                    slide.__class__.__name__
-                )
-            )
-        if not view_url and not getattr(slide, '_url', None):
-            raise ValueError('view_url must be specified to upload new slides')
-        if view_url:
-            if utils.match_url_app(view_url):
-                view_url = utils.convert_url_app_to_project(view_url)
-            if utils.match_url_project(view_url):
-                view_url = utils.convert_url_project_to_view(view_url)
-            if not utils.match_url_view(view_url):
-                raise ValueError('view_url is invalid: {}'.format(view_url))
-            post_url = VIEW_SLIDES_URL_SPEC.format(view_url=view_url)
-        else:
-            post_url = None
-        if autofill_plane and slide.scene.camera and not slide.annotation_plane:
-            slide.annotation_plane = utils.drawing_plane_from_camera(
-                slide.scene.camera
-            )
-        slide.validate()
-        if thumbnail:
-            slide._thumbnail = thumbnail
-        view = self.download(
-            url=view_url or slide._url.split('/slides/')[0],
-            recursive=False,
-            copy=True,
-        )
-        utils.extra_slide_validation(slide, view.elements)
-        json_dict = slide.serialize(include_class=False)
-        for name in IGNORED_PROPS:
-            json_dict.pop(name, None)
-        output_url = self._upload(
-            resource=slide,
-            verbose=verbose,
-            chunk_size=chunk_size,
-            json_dict=json_dict,
-            post_url=post_url,
-            executor=utils.SynchronousExecutor(),
-        )
-        utils.process_uploaded_resource(slide, output_url, verbose)
-        return output_url
-
-    def upload_feedback(self, feedback, slide_url=None, verbose=True):
-        """Upload Feedback to a Slide
-
-        **Parameters:**
-
-        * **feedback** - :class:`lfview.resources.scene.slide.Feedback`
-          object or text comment.
-        * **slide_url** - URL of the Slide to upload the Feedback to
-        * **verbose** - if True, print logging messages
-        """
-        if isinstance(feedback, string_types):
-            feedback = scene.Feedback(comment=feedback)
-        if not isinstance(feedback, scene.Feedback):
-            raise ValueError(
-                'upload_feedback input must be Feedback, not {}'.format(
-                    feedback.__class__.__name__
-                )
-            )
-        if not slide_url and not getattr(feedback, '_url', None):
-            raise ValueError(
-                'slide_url must be specified to upload new feedback'
-            )
-        if slide_url and not utils.match_url_slide(slide_url):
-            raise ValueError('slide_url is invalid: {}'.format(slide_url))
-        elif slide_url:
-            post_url = slide_url + '/feedback'
-        else:
-            post_url = None
-        feedback.validate()
-        json_dict = feedback.serialize(include_class=False)
-        for name in IGNORED_PROPS:
-            json_dict.pop(name, None)
-        output_url = self._upload(
-            resource=feedback,
-            verbose=verbose,
-            chunk_size=None,
-            json_dict=json_dict,
-            post_url=post_url,
-            executor=utils.SynchronousExecutor(),
-        )
-        utils.process_uploaded_resource(feedback, output_url, verbose)
-        return output_url
+        return resource._links['self']
 
     def _upload(
             self,
@@ -449,33 +315,24 @@ class Session(properties.HasProperties):
                 json_dict['content_length'] = len(raw_array)
                 data_to_upload = raw_array
 
-        if not getattr(resource, '_url', None):
+        if not getattr(resource, '_links', None):
             resp = self.session.post(
-                post_url.format(
-                    base=self.endpoint,
-                    org=self.org,
-                    project=self.project,
-                    base_type=resource.BASE_TYPE,
-                    sub_type=(
-                        '/' + resource.SUB_TYPE
-                        if getattr(resource, 'SUB_TYPE', None) else ''
-                    ),
-                ),
+                post_url,
                 json=json_dict,
             )
         elif getattr(resource, '_touched', True):
             resp = self.session.patch(
-                resource._url,
+                resource._links['self'],
                 json=json_dict,
             )
         else:
-            return resource._url
+            return resource._links['self']
         if not resp.ok:
             raise ValueError(resp.text)
         file_resp = None
         file_kwargs = {
             'chunk_size': chunk_size,
-            'session': self.session,
+            'session': requests.Session(),
         }
         if isinstance(resource, files.Array) and resource.array is not None:
             file_resp = executor.submit(
@@ -509,7 +366,133 @@ class Session(properties.HasProperties):
                 )
                 if file_resp_futures is not None:
                     file_resp_futures.append(file_resp)
-        return resp.json()['links']['self']
+        return resp.json()['links']
+
+
+class Session(UploadSession):
+    """View Session class with more functionality than UploadSession
+
+    This functionality includes slide/feedback uploads as well as
+    downloads.
+
+    Warning: Support for these operations using this version of the
+    View API Python client may be deprecated at any time without warning.
+    """
+
+    def upload_slide(
+            self,
+            slide,
+            view=None,
+            verbose=False,
+            autofill_plane=True,
+            thumbnail=None,
+            chunk_size=CHUNK_SIZE,
+    ):
+        """Upload a Slide to a View
+
+        **Parameters:**
+
+        * **slide** - :class:`lfview.resources.scene.slide.Slide` object
+        * **view** - View URL or instance to upload the slide to
+        * **verbose** - if True, print logging messages
+        * **autofill_plane** - if True (the default), the annotation drawing
+          plane is automatically filled in if not provided.
+        * **thumbnail** - image to upload as thumbnail for the slide; this
+          may also be updated in the web app.
+        * **chunk_size** - chunk size for thumbnail upload, must be a
+          multiple of 256 * 1024. By default, 20 MB (80 * 256 * 1024) is used.
+        """
+        if not isinstance(slide, scene.Slide):
+            raise ValueError(
+                'upload_slide input must be Slide, not {}'.format(
+                    slide.__class__.__name__
+                )
+            )
+        if not view and not getattr(slide, '_links', None):
+            raise ValueError('view must be specified to upload new slides')
+        if isinstance(view, string_types):
+            if utils.match_url_app(view):
+                view = utils.convert_url_app_to_project(view)
+            if utils.match_url_project(view):
+                view = utils.convert_url_project_to_view(view)
+            if not utils.match_url_view(view):
+                raise ValueError('view url is invalid: {}'.format(view))
+            view = self.download(url=view, recursive=False)
+        if view:
+            if not isinstance(view, manifests.View):
+                raise ValueError('view must be a valid View URL or instance')
+            if not hasattr(view, '_links'):
+                raise ValueError('view must be uploaded')
+            post_url = view._links['slides']
+        else:
+            view = self.download(url=slide._links['view'], recursive=False)
+            post_url = None
+        if autofill_plane and slide.scene.camera and not slide.annotation_plane:
+            slide.annotation_plane = utils.drawing_plane_from_camera(
+                slide.scene.camera
+            )
+        slide.validate()
+        if thumbnail:
+            slide._thumbnail = thumbnail
+        utils.extra_slide_validation(slide, view.elements)
+        json_dict = slide.serialize(include_class=False)
+        for name in IGNORED_PROPS:
+            json_dict.pop(name, None)
+        output_links = self._upload(
+            resource=slide,
+            verbose=verbose,
+            chunk_size=chunk_size,
+            json_dict=json_dict,
+            post_url=post_url,
+            executor=utils.SynchronousExecutor(),
+        )
+        utils.process_uploaded_resource(slide, output_links, verbose)
+        return output_links['self']
+
+    def upload_feedback(self, feedback, slide=None, verbose=True):
+        """Upload Feedback to a Slide
+
+        **Parameters:**
+
+        * **feedback** - :class:`lfview.resources.scene.slide.Feedback`
+          object or text comment.
+        * **slide** - Slide URL or instance to upload the Feedback to
+        * **verbose** - if True, print logging messages
+        """
+        if isinstance(feedback, string_types):
+            feedback = scene.Feedback(comment=feedback)
+        if not isinstance(feedback, scene.Feedback):
+            raise ValueError(
+                'upload_feedback input must be Feedback, not {}'.format(
+                    feedback.__class__.__name__
+                )
+            )
+        if not slide and not getattr(feedback, '_links', None):
+            raise ValueError('slide must be specified to upload new feedback')
+        if isinstance(slide, string_types):
+            slide = self.download(url=slide, recursive=False)
+        if slide:
+            if not isinstance(slide, scene.Slide):
+                raise ValueError('slide must be a valid Slide URL or instance')
+            if not hasattr(slide, '_links'):
+                raise ValueError('slide must be uploaded')
+            post_url = slide._links['feedback']
+        else:
+            post_url = None
+        feedback.validate()
+        json_dict = feedback.serialize(include_class=False)
+        for name in IGNORED_PROPS:
+            json_dict.pop(name, None)
+        output_links = self._upload(
+            resource=feedback,
+            verbose=verbose,
+            chunk_size=None,
+            json_dict=json_dict,
+            post_url=post_url,
+            executor=utils.SynchronousExecutor(),
+        )
+        utils.process_uploaded_resource(feedback, output_links, verbose)
+        return output_links['self']
 
     def download(
             self,
@@ -661,7 +644,6 @@ class Session(properties.HasProperties):
             else:
                 if verbose:
                     print('You do not own View; attempting to download a copy')
-                copy = True
                 url = utils.convert_url_project_to_view(project_url)
         if not resp or not resp.ok:
             resp = self.session.get(url)
@@ -713,8 +695,8 @@ class Session(properties.HasProperties):
         """
         if isinstance(resource, string_types):
             url = resource
-        elif getattr(resource, '_url', None):
-            url = resource._url
+        elif getattr(resource, '_links', None):
+            url = resource._links['self']
         else:
             raise ValueError(
                 'Unknown resource of type {}'.format(
@@ -724,8 +706,8 @@ class Session(properties.HasProperties):
         resp = self.session.delete(url)
         if not resp.ok:
             raise ValueError('Failed to delete: {}'.format(url))
-        if getattr(resource, '_url', None):
-            resource.url = None
+        if getattr(resource, '_links', None):
+            resource._links = None
 
 
 def _compress_bytes(arr_bytes):

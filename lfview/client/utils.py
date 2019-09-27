@@ -5,12 +5,13 @@ from collections import OrderedDict
 from io import BytesIO
 import re
 
-from lfview.resources import files, manifests, scene, spatial
 import numpy as np
 import properties
 import properties.extras
 import requests
 from six import string_types
+
+from lfview.resources import files, manifests, scene, spatial
 
 from .constants import CHUNK_SIZE, IGNORED_PROPS, RESOURCE_REGISTRIES
 
@@ -181,11 +182,11 @@ def touch(resource, recursive=False):
             item._touched = True
 
 
-def process_uploaded_resource(resource, url, verbose=False, final=True):
+def process_uploaded_resource(resource, links, verbose=False, final=True):
     """Save url as attribute on resource and setup change observer"""
-    if not getattr(resource, '_url', None):
-        resource._url = url
-    resource._future_url = None
+    if not getattr(resource, '_links', None):
+        resource._links = links
+    resource._future_links = None
     if not getattr(resource, '_change_observer', None):
         resource._change_observer = properties.observer(
             resource,
@@ -203,7 +204,7 @@ def is_uploaded(resource):
     """Determine if resource is up-to-date with the server"""
     if isinstance(resource, string_types):
         return True
-    if not getattr(resource, '_url', None):
+    if not getattr(resource, '_links', None):
         return False
     return not getattr(resource, '_touched', True)
 
@@ -216,11 +217,15 @@ def construct_upload_dict(resource):
         if name in IGNORED_PROPS or value is None:
             continue
         if is_pointer(prop):
-            json_value = getattr(value, '_url', value)
+            json_value = (
+                value._links['self'] if hasattr(value, '_links') else value
+            )
         elif is_list_of_pointers(prop):
             json_value = []
             for val in value:
-                json_value.append(getattr(val, '_url', val))
+                json_value.append(
+                    val._links['self'] if hasattr(val, '_links') else val
+                )
         else:
             json_value = prop.serialize(value, include_class=False)
         json_dict.update({name: json_value})
@@ -239,8 +244,7 @@ def build_resource_from_json(url, resource_json, copy):
     if (isinstance(resource, manifests.View)
             and 'elements' not in resource_json):
         resource.elements = [
-            item for item in resource.contents
-            if item.split('/')[-3] == 'elements'
+            item for item in resource.contents if '/elements/' in item
         ]
     if isinstance(resource, files.base._BaseFile):
         file_resp = resource_json['links']['location']
@@ -264,7 +268,7 @@ def build_resource_from_json(url, resource_json, copy):
                 )
             )
     if not copy:
-        process_uploaded_resource(resource, url, False)
+        process_uploaded_resource(resource, resource_json['links'], False)
     return resource
 
 

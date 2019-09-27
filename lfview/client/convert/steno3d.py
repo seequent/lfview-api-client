@@ -1,9 +1,10 @@
 """Function for converting Steno3D projects to Views"""
 from __future__ import absolute_import
 
-from lfview.resources import files, manifests, spatial
 import numpy as np
 import steno3d
+
+from lfview.resources import files, manifests, spatial
 
 
 def steno3d_to_view(steno3d_project, _lookup_dict=None):
