@@ -55,8 +55,7 @@ def test_session(session):
     }
     assert isinstance(session.session, requests.Session)
     assert session.session.headers['Authorization'] == 'bearer my_key'
-    assert session.session.headers['Source'
-                                   ] == 'View API Python Client v0.1.0'
+    assert session.session.headers['Source'] == 'View API Python Client v0.1.0'
     del session.source
     assert session.headers == {
         'Authorization': 'bearer my_key',
