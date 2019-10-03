@@ -44,19 +44,18 @@ def session(mock_session_get, mock_get):
 def test_session(session):
     assert session.service == 'https://example.com'
     assert session.api_key == 'my_key'
-    assert session.client_version == 'View API Python Client v0.1.0b0'
-    assert session.source == 'View API Python Client v0.1.0b0'
+    assert session.client_version == 'View API Python Client v0.1.0'
+    assert session.source == 'View API Python Client v0.1.0'
     assert session.upload_base_url == 'https://example.com/api/v1/project/myorg/myproj'
     assert session.upload_api_url_spec == '{upload_base_url}/{base_type}{type_delimiter}{sub_type}'
     assert session.headers == {
         'Authorization': 'bearer my_key',
-        'Source': 'View API Python Client v0.1.0b0',
+        'Source': 'View API Python Client v0.1.0',
         'Accept-Encoding': 'gzip, deflate'
     }
     assert isinstance(session.session, requests.Session)
     assert session.session.headers['Authorization'] == 'bearer my_key'
-    assert session.session.headers['Source'
-                                   ] == 'View API Python Client v0.1.0b0'
+    assert session.session.headers['Source'] == 'View API Python Client v0.1.0'
     del session.source
     assert session.headers == {
         'Authorization': 'bearer my_key',
