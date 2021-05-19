@@ -323,10 +323,10 @@ class UploadSession(UnauthenticatedSession):
     ):
         super(UploadSession, self).__init__(
             api_key=api_key,
-            service=None,
-            source=None,
-            client_version=None,
-            endpoint=None,
+            service=service,
+            source=source,
+            client_version=client_version,
+            endpoint=endpoint,
         )
 
     def invite_to_view(
