@@ -24,13 +24,14 @@ except ImportError:
     PARALLEL = False
 
 
-class UploadSession(properties.HasProperties):
-    """User session object for uploading data through the View API
+class UnauthenticatedSession(properties.HasProperties):
+    """Session object for connecting to View API
 
-    This class will likely be future-compatible with changes to
-    the API.
+    This session does not require authentication so it may only be used
+    for downloading public data.
     """
-    api_key = properties.String('LF View API Key')
+
+    api_key = properties.String('LF View API Key', required=False)
     service = properties.String('Base API service', required=False)
     client_version = properties.String(
         'Information about the API client',
@@ -40,32 +41,25 @@ class UploadSession(properties.HasProperties):
         'Provenance information for uploaded data',
         default=DEFAULT_CLIENT_VERSION,
     )
-    upload_base_url = properties.String(
-        'URL for the default project of the user, discovered implicitly '
-        'from the API',
-    )
-    upload_api_url_spec = properties.String(
-        'Format string spec to build upload URL',
-    )
 
     def __init__(
             self,
-            api_key,
+            api_key=None,
             service=None,
             source=None,
             client_version=None,
             endpoint=None
     ):
-        kwargs = {
-            'api_key': api_key,
-        }
+        kwargs = {}
+        if api_key:
+            kwargs.update({'api_key': api_key})
         if service or endpoint:
             kwargs.update({'service': service or endpoint})
         if source or client_version:
             kwargs.update({'source': source or client_version})
         if client_version:
             kwargs.update({'client_version': client_version})
-        super(UploadSession, self).__init__(**kwargs)
+        super(UnauthenticatedSession, self).__init__(**kwargs)
 
         # Connect to API discovery service
         parsed_endpoint = urlparse(DISCOVERY_ENDPOINT)
@@ -82,26 +76,24 @@ class UploadSession(properties.HasProperties):
         user_endpoint = endpoints['user_api_url']
 
         # Get User information and validate API key
-        user_resp = self.session.get(user_endpoint)
-        if user_resp.status_code in (401, 403):
-            raise ValueError('Invalid api key')
-        elif not user_resp.ok:
-            raise ValueError('Unable to connect to Seequent API')
-        user = user_resp.json()
-        if not user.get('accepted_terms'):
-            raise ValueError('Please accept terms online')
-        self.upload_base_url = user['links']['default_upload_location']
+        if self.api_key:
+            user_resp = self.session.get(user_endpoint)
+            if user_resp.status_code in (401, 403):
+                raise ValueError('Invalid api key')
+            elif not user_resp.ok:
+                raise ValueError('Unable to connect to Seequent API')
+            user = user_resp.json()
+            if not user.get('accepted_terms'):
+                raise ValueError('Please accept terms online')
+            self.upload_base_url = user['links']['default_upload_location']
         self.validate()
 
     @properties.Dictionary('Headers to authenticate the user for API access')
     def headers(self):
         """User session security headers for accessing the API"""
-        if not self.api_key:
-            raise ValueError('User not logged in - please set api_key')
-        headers = {
-            'Authorization': 'bearer {}'.format(self.api_key),
-            'Accept-Encoding': 'gzip, deflate'
-        }
+        headers = {'Accept-Encoding': 'gzip, deflate'}
+        if self.api_key:
+            headers.update({'Authorization': 'bearer {}'.format(self.api_key)})
         if self.source:
             headers.update({'Source': self.source})
         return headers
@@ -122,6 +114,220 @@ class UploadSession(properties.HasProperties):
             if self.source is None:
                 self._session.headers.pop('source', None)
             self._session.headers.update(self.headers)
+
+    def download(
+            self,
+            url,
+            recursive=True,
+            copy=False,
+            verbose=False,
+            allow_failure=False,
+            parallel=PARALLEL,
+            workers=100,
+            executor=None,
+    ):
+        """Download resources from a Project
+
+        This includes `spatial resources <https://lfview-resources-spatial.readthedocs.io/en/latest/>`_
+        (elements, data, etc), `files <https://lfview-resources-files.readthedocs.io/en/latest/>`_
+        (arrays, images), `Views <https://lfview-resources-manifests.readthedocs.io/en/latest/>`_,
+        and `slides <https://lfview-resources-scene.readthedocs.io/en/latest/>`_.
+
+        **Parameters:**
+
+        * **url** - URL for resource to download
+        * **recursive** - if True (the default), follow pointers and download
+          all data. If False, just keep URLs for pointers
+        * **copy** - If False (the default), downloaded objects will be
+          associated with the source resources and re-uploading
+          will modify the source
+        * **verbose** - if True, print logging messages
+        * **allow_failure** - if True, failure to retrieve a resource simply
+          returns the url rather than raising an error. This is possibly
+          useful when recursively downloading a View with limited permissions.
+          Default is False.
+        * **parallel** - Perform concurrent downloads using Python threading.
+          By default, this is True if concurrent.futures is available.
+        * **workers** - Maximum number of thread workers to use; ignored
+          if parallel=False or alternative executor is provided.
+          Default is 100.
+        * **executor** - Alternative function executor for parallelization.
+          Must implement :code:`executor.submit(fn, *args, **kwargs)` and
+          :code:`executor.shutdown(wait)`. The :code:`submit` method
+          must return a "future" object that implements :code:`future.done()`
+          and :code:`future.result()`.
+        """
+        if not executor:
+            executor = utils.get_default_executor(parallel, verbose, workers)
+        # Lookup dictionary holds URLs and corresponding downloaded JSON
+        # payload. During recursive download, additional URLs are added.
+        # Download is complete when all URL keys have payloads.
+        lookup_dict = {url: None}
+        try:
+            while True:
+                downloads_complete = True
+                for key, value in sorted(lookup_dict.copy().items()):
+                    # If URL payload is None, initiate download. This
+                    # also adds child URLs to the lookup_dict.
+                    if value is None:
+                        downloads_complete = False
+                        lookup_dict[key] = executor.submit(
+                            self._download_resource_json,
+                            url=key,
+                            recursive=recursive,
+                            verbose=verbose,
+                            allow_failure=allow_failure,
+                            lookup_dict=lookup_dict,
+                        )
+                        continue
+                    # Ignore incomplete and resolve complete futures
+                    if isinstance(value, (Future, utils.SynchronousFuture)):
+                        downloads_complete = False
+                        if value.done():
+                            lookup_dict[key] = value.result()
+                        continue
+                    # Failed downloads will use URL as value if allow_failure
+                    if isinstance(value, string_types):
+                        continue
+                    # Check for binary download link, and if present,
+                    # initiate download.
+                    location = value.get('links', {}).get('location')
+                    if not location:
+                        continue
+                    if isinstance(location, string_types):
+                        downloads_complete = False
+                        value['links']['location'] = executor.submit(
+                            self.session.get,
+                            location,
+                        )
+                        continue
+                    # Ignore incomplete and resolve complete futures
+                    if isinstance(location, (Future, utils.SynchronousFuture)):
+                        if not location.done():
+                            downloads_complete = False
+                            continue
+                        if verbose:
+                            file_type = value.get('type', '/file')
+                            utils.log(
+                                'Downloaded binary data for {} {}'.format(
+                                    file_type.split('/')[1].title(),
+                                    value.get('uid', ''),
+                                ),
+                                False,
+                            )
+                        # Stash the download response in links
+                        value['links']['location'] = location.result()
+                if downloads_complete:
+                    break
+        finally:
+            executor.shutdown(wait=True)
+        if verbose:
+            utils.log('Constructing resources from data', False)
+        # Convert downloaded JSON to Python object
+        for key, value in lookup_dict.items():
+            if isinstance(value, dict):
+                lookup_dict[key] = utils.build_resource_from_json(
+                    key, value, copy
+                )
+        # Replace URLs with pointers to Python objects
+        for resource in lookup_dict.values():
+            if isinstance(resource, files.base._BaseUIDModel):
+                utils.populate_resource_pointers(resource, lookup_dict)
+        if verbose:
+            utils.log(
+                'Finished download of {}'.format(
+                    lookup_dict[url].__class__.__name__,
+                ),
+            )
+        return lookup_dict[url]
+
+    def _download_resource_json(
+            self,
+            url,
+            recursive,
+            verbose,
+            allow_failure,
+            lookup_dict,
+    ):
+        """Helper method to fetch resource JSON
+
+        Download from the provided URL and update the lookup_dict
+        with additional resource URLs.
+        """
+        resp = None
+        # If /app/ url is provided, attempt to use Project API url, but
+        # fall back to View API url.
+        if utils.match_url_app(url):
+            project_url = utils.convert_url_app_to_project(url)
+            resp = self.session.get(project_url)
+            if resp.ok:
+                url = project_url
+            else:
+                if verbose:
+                    print('You do not own View; attempting to download a copy')
+                url = utils.convert_url_project_to_view(project_url)
+        if not resp or not resp.ok:
+            resp = self.session.get(url)
+        if not resp.ok:
+            if allow_failure:
+                return url
+            raise ValueError('Unable to download {}'.format(url))
+        resource_json = resp.json()
+        resource_class = utils.find_class_from_resp(
+            url=url, resp_type=resource_json.get('type')
+        )
+        if verbose:
+            utils.log(
+                'Downloaded metadata for {} {}'.format(
+                    resource_class.__name__,
+                    resource_json.get('uid', ''),
+                ),
+                False,
+            )
+        # Do not attempt recursive download of Slide/Feedback
+        if issubclass(resource_class, scene.slide._BaseCollaborationModel):
+            recursive = False
+
+        if recursive:
+            for name, prop in sorted(resource_class._props.items()):
+                value = resource_json.get(name)
+                if name in IGNORED_PROPS or not value:
+                    continue
+                if utils.is_pointer(prop) and isinstance(value, string_types):
+                    lookup_dict.setdefault(value)
+                elif utils.is_list_of_pointers(prop):
+                    for val in value:
+                        if isinstance(val, string_types):
+                            lookup_dict.setdefault(val)
+        return resource_json
+
+
+class UploadSession(UnauthenticatedSession):
+    """User session object for uploading data through the View API"""
+    api_key = properties.String('LF View API Key')
+    upload_base_url = properties.String(
+        'URL for the default project of the user, discovered implicitly '
+        'from the API',
+    )
+    upload_api_url_spec = properties.String(
+        'Format string spec to build upload URL',
+    )
+
+    def __init__(
+            self,
+            api_key,
+            service=None,
+            source=None,
+            client_version=None,
+            endpoint=None
+    ):
+        super(UploadSession, self).__init__(
+            api_key=api_key,
+            service=service,
+            source=source,
+            client_version=client_version,
+            endpoint=endpoint,
+        )
 
     def invite_to_view(
             self, view, email, role, send_email=False, message=None
@@ -373,10 +579,7 @@ class Session(UploadSession):
     """View Session class with more functionality than UploadSession
 
     This functionality includes slide/feedback uploads as well as
-    downloads.
-
-    Warning: Support for these operations using this version of the
-    View API Python client may be deprecated at any time without warning.
+    deletes.
     """
 
     def upload_slide(
@@ -493,192 +696,6 @@ class Session(UploadSession):
         )
         utils.process_uploaded_resource(feedback, output_links, verbose)
         return output_links['self']
-
-    def download(
-            self,
-            url,
-            recursive=True,
-            copy=False,
-            verbose=False,
-            allow_failure=False,
-            parallel=PARALLEL,
-            workers=100,
-            executor=None,
-    ):
-        """Download resources from a Project
-
-        This includes `spatial resources <https://lfview-resources-spatial.readthedocs.io/en/latest/>`_
-        (elements, data, etc), `files <https://lfview-resources-files.readthedocs.io/en/latest/>`_
-        (arrays, images), `Views <https://lfview-resources-manifests.readthedocs.io/en/latest/>`_,
-        and `slides <https://lfview-resources-scene.readthedocs.io/en/latest/>`_.
-
-        **Parameters:**
-
-        * **url** - URL for resource to download
-        * **recursive** - if True (the default), follow pointers and download
-          all data. If False, just keep URLs for pointers
-        * **copy** - If False (the default), downloaded objects will be
-          associated with the source resources and re-uploading
-          will modify the source
-        * **verbose** - if True, print logging messages
-        * **allow_failure** - if True, failure to retrieve a resource simply
-          returns the url rather than raising an error. This is possibly
-          useful when recursively downloading a View with limited permissions.
-          Default is False.
-        * **parallel** - Perform concurrent downloads using Python threading.
-          By default, this is True if concurrent.futures is available.
-        * **workers** - Maximum number of thread workers to use; ignored
-          if parallel=False or alternative executor is provided.
-          Default is 100.
-        * **executor** - Alternative function executor for parallelization.
-          Must implement :code:`executor.submit(fn, *args, **kwargs)` and
-          :code:`executor.shutdown(wait)`. The :code:`submit` method
-          must return a "future" object that implements :code:`future.done()`
-          and :code:`future.result()`.
-        """
-        if not executor:
-            executor = utils.get_default_executor(parallel, verbose, workers)
-        # Lookup dictionary holds URLs and corresponding downloaded JSON
-        # payload. During recursive download, additional URLs are added.
-        # Download is complete when all URL keys have payloads.
-        lookup_dict = {url: None}
-        try:
-            while True:
-                downloads_complete = True
-                for key, value in sorted(lookup_dict.copy().items()):
-                    # If URL payload is None, initiate download. This
-                    # also adds child URLs to the lookup_dict.
-                    if value is None:
-                        downloads_complete = False
-                        lookup_dict[key] = executor.submit(
-                            self._download_resource_json,
-                            url=key,
-                            recursive=recursive,
-                            verbose=verbose,
-                            allow_failure=allow_failure,
-                            lookup_dict=lookup_dict,
-                        )
-                        continue
-                    # Ignore incomplete and resolve complete futures
-                    if isinstance(value, (Future, utils.SynchronousFuture)):
-                        downloads_complete = False
-                        if value.done():
-                            lookup_dict[key] = value.result()
-                        continue
-                    # Failed downloads will use URL as value if allow_failure
-                    if isinstance(value, string_types):
-                        continue
-                    # Check for binary download link, and if present,
-                    # initiate download.
-                    location = value.get('links', {}).get('location')
-                    if not location:
-                        continue
-                    if isinstance(location, string_types):
-                        downloads_complete = False
-                        value['links']['location'] = executor.submit(
-                            self.session.get,
-                            location,
-                        )
-                        continue
-                    # Ignore incomplete and resolve complete futures
-                    if isinstance(location, (Future, utils.SynchronousFuture)):
-                        if not location.done():
-                            downloads_complete = False
-                            continue
-                        if verbose:
-                            file_type = value.get('type', '/file')
-                            utils.log(
-                                'Downloaded binary data for {} {}'.format(
-                                    file_type.split('/')[1].title(),
-                                    value.get('uid', ''),
-                                ),
-                                False,
-                            )
-                        # Stash the download response in links
-                        value['links']['location'] = location.result()
-                if downloads_complete:
-                    break
-        finally:
-            executor.shutdown(wait=True)
-        if verbose:
-            utils.log('Constructing resources from data', False)
-        # Convert downloaded JSON to Python object
-        for key, value in lookup_dict.items():
-            if isinstance(value, dict):
-                lookup_dict[key] = utils.build_resource_from_json(
-                    key, value, copy
-                )
-        # Replace URLs with pointers to Python objects
-        for resource in lookup_dict.values():
-            if isinstance(resource, files.base._BaseUIDModel):
-                utils.populate_resource_pointers(resource, lookup_dict)
-        if verbose:
-            utils.log(
-                'Finished download of {}'.format(
-                    lookup_dict[url].__class__.__name__,
-                ),
-            )
-        return lookup_dict[url]
-
-    def _download_resource_json(
-            self,
-            url,
-            recursive,
-            verbose,
-            allow_failure,
-            lookup_dict,
-    ):
-        """Helper method to fetch resource JSON
-
-        Download from the provided URL and update the lookup_dict
-        with additional resource URLs.
-        """
-        resp = None
-        # If /app/ url is provided, attempt to use Project API url, but
-        # fall back to View API url.
-        if utils.match_url_app(url):
-            project_url = utils.convert_url_app_to_project(url)
-            resp = self.session.get(project_url)
-            if resp.ok:
-                url = project_url
-            else:
-                if verbose:
-                    print('You do not own View; attempting to download a copy')
-                url = utils.convert_url_project_to_view(project_url)
-        if not resp or not resp.ok:
-            resp = self.session.get(url)
-        if not resp.ok:
-            if allow_failure:
-                return url
-            raise ValueError('Unable to download {}'.format(url))
-        resource_json = resp.json()
-        resource_class = utils.find_class_from_resp(
-            url=url, resp_type=resource_json.get('type')
-        )
-        if verbose:
-            utils.log(
-                'Downloaded metadata for {} {}'.format(
-                    resource_class.__name__,
-                    resource_json.get('uid', ''),
-                ),
-                False,
-            )
-        # Do not attempt recursive download of Slide/Feedback
-        if issubclass(resource_class, scene.slide._BaseCollaborationModel):
-            recursive = False
-
-        if recursive:
-            for name, prop in sorted(resource_class._props.items()):
-                value = resource_json.get(name)
-                if name in IGNORED_PROPS or not value:
-                    continue
-                if utils.is_pointer(prop) and isinstance(value, string_types):
-                    lookup_dict.setdefault(value)
-                elif utils.is_list_of_pointers(prop):
-                    for val in value:
-                        if isinstance(val, string_types):
-                            lookup_dict.setdefault(val)
-        return resource_json
 
     def delete(self, resource):
         """Delete a downloaded resource
