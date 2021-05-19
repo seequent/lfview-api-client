@@ -21,7 +21,7 @@ with open('README.rst') as f:
 
 setuptools.setup(
     name='lfview-api-client',
-    version='0.1.0',
+    version='0.1.1',
     packages=setuptools.find_packages(exclude=('tests', )),
     install_requires=[
         'requests', 'properties[full]>=0.5.6', 'omf==1.0.1', 'steno3d',
