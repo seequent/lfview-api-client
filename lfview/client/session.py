@@ -91,9 +91,7 @@ class UnauthenticatedSession(properties.HasProperties):
     @properties.Dictionary('Headers to authenticate the user for API access')
     def headers(self):
         """User session security headers for accessing the API"""
-        headers = {
-            'Accept-Encoding': 'gzip, deflate'
-        }
+        headers = {'Accept-Encoding': 'gzip, deflate'}
         if self.api_key:
             headers.update({'Authorization': 'bearer {}'.format(self.api_key)})
         if self.source:
