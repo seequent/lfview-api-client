@@ -300,9 +300,13 @@ def match_url_app(url):
     These take the form:
 
     https://example.com/app/org123/proj456/view789
+
+    or
+
+    https://example.com/embed/org123/proj456/view789
     """
     app_url_re = (
-        r'^(?P<base>.+)/app'
+        r'^(?P<base>.+)/(app|embed)'
         r'/(?P<org>[a-z0-9]+)/(?P<proj>[a-z0-9]+)'
         r'/(?P<view>[a-z0-9]+)$'
     )
