@@ -1,0 +1,24 @@
+name: Run lfview-api-client tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v2
+      - name: unit tests
+        run: make tests
+      - name: unit tests 2.7
+        run: make tests27
+      - name: docs tests
+        run: make docs
+      - name: yapf tests
+        run: make lint-yapf
