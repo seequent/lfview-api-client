@@ -26,7 +26,7 @@ def view_to_omf(view, filename='view.omf'):
 
     Input:
     **view** - Valid View instance; see
-    :class:`lfview.resources.manifests.manifests.View
+    :class:`lfview.resources.manifests.manifests.View`
     **filename** - Path and filename for output OMF file (default: 'view.omf')`
     """
 
