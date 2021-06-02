@@ -25,7 +25,7 @@ setuptools.setup(
     packages=setuptools.find_packages(exclude=('tests', )),
     install_requires=[
         'requests', 'properties[full]>=0.5.6', 'omf==1.0.1', 'steno3d',
-        'lfview-resources-files==0.0.2', 'lfview-resources-spatial==0.0.5',
+        'lfview-resources-files==0.0.2', 'lfview-resources-spatial==0.0.6',
         'lfview-resources-manifests==0.0.1', 'lfview-resources-scene==0.0.1',
         'futures; python_version == "2.7"'
     ],
