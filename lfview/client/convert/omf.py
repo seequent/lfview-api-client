@@ -7,7 +7,7 @@ from .steno3d import steno3d_to_view
 
 
 def omf_to_view(omf_file):
-    """Translate an OMF project into a View
+    """Translate an OMF file into a View
 
     Input:
     **omf_file** - Valid OMF file or instance of OMF project; see
@@ -19,6 +19,16 @@ def omf_to_view(omf_file):
 
 
 def view_to_omf(view, filename='view.omf'):
+    """Save a View as an OMF file
+
+    All object types, data/texture types, and legends are supported. Only
+    custom colormaps are unsupported due to limitations of OMF v1.
+
+    Input:
+    **view** - Valid View instance; see
+    :class:`lfview.resources.manifests.manifests.View
+    **filename** - Path and filename for output OMF file (default: 'view.omf')`
+    """
 
     omf_project = omf.Project(
         name=view.name or '',
