@@ -4,7 +4,7 @@ from lfview.resources.manifests import MANIFEST_REGISTRY
 from lfview.resources.scene import SCENE_REGISTRY
 from lfview.resources.spatial import SPATIAL_REGISTRY
 
-__version__ = '0.1.1'
+__version__ = '0.1.2'
 
 # Upload chunk size must be a multiple of 256 KB
 # A default of 20 MB works well for most connections
